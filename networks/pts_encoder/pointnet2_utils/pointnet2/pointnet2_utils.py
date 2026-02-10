@@ -33,7 +33,9 @@ class FurthestPointSampling(Function):
         temp = torch.empty((B, N), dtype=torch.float32, device='npu:0')
         temp.fill_(1e10)
 
+        print(f"[DEBUG-5] pointnet2_utils.py:{__line__} 准备调用 furthest_point_sampling_wrapper, xyz shape: {xyz.shape}, npoint: {npoint}")
         pointnet2.furthest_point_sampling_wrapper(B, N, npoint, xyz, temp, output)
+        print(f"[DEBUG-5] pointnet2_utils.py:{__line__} furthest_point_sampling_wrapper 返回")
         return output
 
     @staticmethod
@@ -63,7 +65,9 @@ class GatherOperation(Function):
         # output = torch.cuda.FloatTensor(B, C, npoint)
         output = torch.empty((B, C, npoint), dtype=torch.float32, device='npu:0')
 
+        print(f"[DEBUG-6] pointnet2_utils.py:{__line__} 准备调用 gather_points_wrapper, features shape: {features.shape}, idx shape: {idx.shape}")
         pointnet2.gather_points_wrapper(B, C, N, npoint, features, idx, output)
+        print(f"[DEBUG-6] pointnet2_utils.py:{__line__} gather_points_wrapper 返回")
 
         ctx.for_backwards = (idx, C, N)
         return output
@@ -255,9 +259,12 @@ class QueryAndGroup(nn.Module):
         :return:
             new_features: (B, 3 + C, npoint, nsample)
         """
+        print(f"[DEBUG-7] pointnet2_utils.py:{__line__} QueryAndGroup.forward, xyz shape: {xyz.shape}, new_xyz shape: {new_xyz.shape}")
         idx = ball_query(self.radius, self.nsample, xyz, new_xyz)
+        print(f"[DEBUG-7] pointnet2_utils.py:{__line__} ball_query 返回, idx shape: {idx.shape}")
         xyz_trans = xyz.transpose(1, 2).contiguous()
         grouped_xyz = grouping_operation(xyz_trans, idx)  # (B, 3, npoint, nsample)
+        print(f"[DEBUG-7] pointnet2_utils.py:{__line__} grouping_operation(xyz_trans) 返回, shape: {grouped_xyz.shape}")
         grouped_xyz -= new_xyz.transpose(1, 2).unsqueeze(-1)
 
         if features is not None:

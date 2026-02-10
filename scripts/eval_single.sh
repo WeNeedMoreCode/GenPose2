@@ -13,5 +13,5 @@ CUDA_VISIBLE_DEVICES=0 python runners/evaluation_single.py \
 --clustering 1 \
 --T0 0.55 \
 --dino pointwise \
---num_worker 32 \
+--num_worker 0 \
 --real_drop 3 \

@@ -27,6 +27,17 @@ def _gather_points(features, idx):
     output = torch.gather(features, dim=-1, index=idx)
     return output
 
+def _gather_points_grad(grad_out, idx, N):
+    """纯PyTorch实现Gather反向梯度"""
+    B, C, M = grad_out.shape
+    # 创建梯度容器 (B, C, N)
+    grad_points = torch.zeros((B, C, N), device=grad_out.device, dtype=grad_out.dtype)
+    # 将索引扩展到所有通道 (B, M) -> (B, C, M)
+    idx_expanded = idx.unsqueeze(1).expand(-1, C, -1)
+    # 使用 scatter_add_ 累加梯度（关键：同一个点可能被多次采样，需要累加）
+    grad_points.scatter_add_(dim=-1, index=idx_expanded, src=grad_out)
+    return grad_points
+
 def _ball_query(new_xyz, xyz, radius, nsample):
     """纯PyTorch实现球形邻域查询核心逻辑"""
     B, N, _ = xyz.shape
@@ -104,7 +115,9 @@ def furthest_point_sampling_wrapper(B, N, m, points_tensor, temp_tensor, idx_ten
 
 def gather_points_wrapper(B, C, N, npoints, points_tensor, idx_tensor, out_tensor):
     """与原CUDA版本接口完全一致的Gather wrapper"""
+    print(f"[DEBUG-8] pointnet2_torch.py gather_points_wrapper, points shape: {points_tensor.shape}, idx shape: {idx_tensor.shape}")
     out = _gather_points(points_tensor, idx_tensor)
+    print(f"[DEBUG-8] pointnet2_torch.py gather_points_wrapper 返回")
     out_tensor.copy_(out)
     return 1
 
@@ -116,7 +129,9 @@ def gather_points_grad_wrapper(B, C, N, npoints, grad_out_tensor, idx_tensor, gr
 
 def ball_query_wrapper(B, n, m, radius, nsample, new_xyz_tensor, xyz_tensor, idx_tensor):
     """与原CUDA版本接口完全一致的球形邻域查询wrapper"""
+    print(f"[DEBUG-9] pointnet2_torch.py ball_query_wrapper, new_xyz shape: {new_xyz_tensor.shape}, xyz shape: {xyz_tensor.shape}, radius: {radius}, nsample: {nsample}")
     idx = _ball_query(new_xyz_tensor, xyz_tensor, radius, nsample)
+    print(f"[DEBUG-9] pointnet2_torch.py ball_query_wrapper 返回")
     idx_tensor.copy_(idx)
     return 1
 
@@ -125,7 +140,9 @@ ball_query_wrapper_fast = ball_query_wrapper
 
 def group_points_wrapper(B, c, n, npoints, nsample, points_tensor, idx_tensor, out_tensor):
     """与原CUDA版本接口完全一致的点分组wrapper"""
+    print(f"[DEBUG-10] pointnet2_torch.py group_points_wrapper, points shape: {points_tensor.shape}, idx shape: {idx_tensor.shape}")
     out = _group_points(points_tensor, idx_tensor)
+    print(f"[DEBUG-10] pointnet2_torch.py group_points_wrapper 返回")
     out_tensor.copy_(out)
     return 1
 
@@ -143,7 +160,9 @@ group_points_grad_wrapper_fast = group_points_grad_wrapper
 
 def three_nn_wrapper(B, n, m, unknown_tensor, known_tensor, dist2_tensor, idx_tensor):
     """与原CUDA版本接口完全一致的三邻域查询wrapper"""
+    print(f"[DEBUG-11] pointnet2_torch.py three_nn_wrapper, unknown shape: {unknown_tensor.shape}, known shape: {known_tensor.shape}")
     dist2, idx = _three_nn(unknown_tensor, known_tensor)
+    print(f"[DEBUG-11] pointnet2_torch.py three_nn_wrapper 返回")
     dist2_tensor.copy_(dist2)
     idx_tensor.copy_(idx)
 
@@ -152,7 +171,9 @@ three_nn_wrapper_fast = three_nn_wrapper
 
 def three_interpolate_wrapper(B, c, m, n, points_tensor, idx_tensor, weight_tensor, out_tensor):
     """与原CUDA版本接口完全一致的三邻域插值wrapper"""
+    print(f"[DEBUG-12] pointnet2_torch.py three_interpolate_wrapper, points shape: {points_tensor.shape}, idx shape: {idx_tensor.shape}")
     out = _three_interpolate(points_tensor, idx_tensor, weight_tensor)
+    print(f"[DEBUG-12] pointnet2_torch.py three_interpolate_wrapper 返回")
     out_tensor.copy_(out)
 
 # 兼容原three_interpolate_wrapper_fast

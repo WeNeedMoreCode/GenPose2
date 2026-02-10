@@ -27,6 +27,7 @@ class _PointnetSAModuleBase(nn.Module):
             new_features: (B, npoint, \sum_k(mlps[k][-1])) tensor of the new_features descriptors
             new_idx: (B, npoint) tensor of indices
         """
+        print(f"[DEBUG-4] pointnet2_modules.py:{__line__} PointnetSAModuleMSG.forward, xyz shape: {xyz.shape}")
         new_features_list = []
 
         xyz_flipped = xyz.transpose(1, 2).contiguous()

@@ -58,10 +58,10 @@ def get_dataloader():
         dataset,
         batch_size=cfg.batch_size,
         shuffle=False,
-        num_workers=cfg.num_workers,
-        persistent_workers=True,
+        num_workers=0,
+        persistent_workers=False,
         drop_last=False,
-        pin_memory=True,
+        pin_memory=False,
     )
     return dataloader
 
@@ -81,17 +81,19 @@ def inference_score(save_path):
 
     for i, test_batch in enumerate(tqdm(dataloader, desc="score sampling")):
         batch_sample = process_batch(
-            batch_sample = test_batch, 
-            device=cfg.device, 
+            batch_sample = test_batch,
+            device=cfg.device,
             pose_mode=cfg.pose_mode,
         )
+        print(f"[DEBUG-1] evaluation_single.py:{__line__} 准备调用 pred_func, batch pts shape: {batch_sample['pts'].shape}")
         pred_results = score_agent.pred_func(
-            data=batch_sample, 
-            repeat_num=cfg.eval_repeat_num, 
+            data=batch_sample,
+            repeat_num=cfg.eval_repeat_num,
             T0=cfg.T0,
             return_average_res=False,
             return_process=False
         )
+        print(f"[DEBUG-1] evaluation_single.py:{__line__} pred_func 返回")
         pred_pose, _ = pred_results
         all_pred_pose.append(pred_pose)
         all_score_feature.append({
