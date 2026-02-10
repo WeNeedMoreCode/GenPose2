@@ -5,7 +5,7 @@ import torch.nn as nn
 from typing import Tuple
 import sys
 
-import pointnet2_cuda as pointnet2
+# import pointnet2_cuda as pointnet2
 import pointnet2_torch as pointnet2
 
 
@@ -24,8 +24,14 @@ class FurthestPointSampling(Function):
         assert xyz.is_contiguous()
 
         B, N, _ = xyz.size()
-        output = torch.cuda.IntTensor(B, npoint)
-        temp = torch.cuda.FloatTensor(B, N).fill_(1e10)
+                # import ipdb;ipdb.set_trace()
+        # output = torch.cuda.IntTensor(B, npoint)
+        # output = torch.npu.IntTensor(B, npoint)
+        output = torch.empty((B, npoint), dtype=torch.int32, device='npu:0')
+        # temp = torch.cuda.FloatTensor(B, N).fill_(1e10)
+        # temp = torch.npu.FloatTensor(B, N).fill_(1e10)
+        temp = torch.empty((B, N), dtype=torch.float32, device='npu:0')
+        temp.fill_(1e10)
 
         pointnet2.furthest_point_sampling_wrapper(B, N, npoint, xyz, temp, output)
         return output
@@ -54,7 +60,8 @@ class GatherOperation(Function):
 
         B, npoint = idx.size()
         _, C, N = features.size()
-        output = torch.cuda.FloatTensor(B, C, npoint)
+        # output = torch.cuda.FloatTensor(B, C, npoint)
+        output = torch.empty((B, C, npoint), dtype=torch.float32, device='npu:0')
 
         pointnet2.gather_points_wrapper(B, C, N, npoint, features, idx, output)
 

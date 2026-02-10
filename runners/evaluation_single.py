@@ -35,6 +35,7 @@ from configs.config import get_config
 ''' load config '''
 cfg = get_config()
 cfg.load_per_object = True
+cfg.device='npu:0'
 
 torch.manual_seed(cfg.seed)
 torch.cuda.manual_seed(cfg.seed)
