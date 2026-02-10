@@ -8,6 +8,7 @@ from tqdm import tqdm
 import _pickle as cPickle
 import pickle
 import torch
+import torch_npu
 import torch.nn as nn
 import torch.nn.functional as F
 import copy
@@ -85,7 +86,7 @@ def inference_score(save_path):
             device=cfg.device,
             pose_mode=cfg.pose_mode,
         )
-        print(f"[DEBUG-1] evaluation_single.py:{__line__} 准备调用 pred_func, batch pts shape: {batch_sample['pts'].shape}")
+        print(f"[DEBUG-1] evaluation_single.py:  准备调用 pred_func, batch pts shape: {batch_sample['pts'].shape}")
         pred_results = score_agent.pred_func(
             data=batch_sample,
             repeat_num=cfg.eval_repeat_num,
@@ -93,7 +94,7 @@ def inference_score(save_path):
             return_average_res=False,
             return_process=False
         )
-        print(f"[DEBUG-1] evaluation_single.py:{__line__} pred_func 返回")
+        print(f"[DEBUG-1] evaluation_single.py:  pred_func 返回")
         pred_pose, _ = pred_results
         all_pred_pose.append(pred_pose)
         all_score_feature.append({

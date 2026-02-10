@@ -1,6 +1,7 @@
 import sys
 import os
 import torch
+import torch_npu
 import time
 import functools
 import numpy as np
@@ -167,7 +168,8 @@ class PoseNet(nn.Module):
         if not os.path.exists(load_path):
             raise ValueError("Checkpoint {} not exists.".format(load_path))
 
-        checkpoint = torch.load(load_path)
+        # checkpoint = torch.load(load_path)
+        checkpoint = torch.load(load_path, map_location=torch.device('npu:0'))
         print("Loading checkpoint from {} ...".format(load_path))
         
         if isinstance(self.net, nn.DataParallel):
@@ -454,9 +456,9 @@ class PoseNet(nn.Module):
         self.net.eval()
 
         with torch.no_grad():
-            print(f"[DEBUG-2] posenet_agent.py:{__line__} 准备提取 pts_feature, pts shape: {data['pts'].shape}")
+            print(f"[DEBUG-2] posenet_agent.py:  准备提取 pts_feature, pts shape: {data['pts'].shape}")
             data['pts_feat'] = self.net(data, mode='pts_feature')
-            print(f"[DEBUG-2] posenet_agent.py:{__line__} pts_feature 提取完成，shape: {data['pts_feat'].shape}")
+            print(f"[DEBUG-2] posenet_agent.py:  pts_feature 提取完成，shape: {data['pts_feat'].shape}")
             data['rgb_feat'] = self.net(data, mode='rgb_feature')
             bs = data['pts'].shape[0]
             self.pts_feature = True
