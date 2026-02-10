@@ -115,12 +115,12 @@ class GFObjectPose(nn.Module):
             assert 0
             pts_feat = self.pts_encoder(pts.permute(0, 2, 1))    # -> (bs, 3, 1024)
         elif self.cfg.pts_encoder in ['pointnet2']:
-            print(f"[DEBUG-3] posenet.py:{__line__} 准备调用 pts_encoder, pts shape: {pts.shape}")
+            print(f"[DEBUG-3] posenet.py:  准备调用 pts_encoder, pts shape: {pts.shape}")
             if self.cfg.dino == 'pointwise':
                 pts_feat = self.pts_encoder(torch.concatenate([pts, rgb_feat], dim=-1))
             else:
                 pts_feat = self.pts_encoder(pts)
-            print(f"[DEBUG-3] posenet.py:{__line__} pts_encoder 返回, feat shape: {pts_feat.shape}")
+            print(f"[DEBUG-3] posenet.py:  pts_encoder 返回, feat shape: {pts_feat.shape}")
         elif self.cfg.pts_encoder == 'pointnet_and_pointnet2':
             assert 0
             pts_pointnet_feat = self.pts_pointnet_encoder(pts.permute(0, 2, 1))

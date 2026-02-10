@@ -12,10 +12,19 @@ def _furthest_point_sampling(xyz, npoints):
     idx[:, 0] = farthest
 
     for i in range(1, npoints):
+        print(f'npoints{npoints}')
+        print(f'iiiiiiiiiiiiiiiiiiii{i}')
+        print('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+        print(f'[DEBUG] xyz.device={xyz.device}, xyz.shape={xyz.shape}')
+        print(f'[DEBUG] batch_indices.device={batch_indices.device}, batch_indices.shape={batch_indices.shape}')
+        print(f'[DEBUG] farthest.device={farthest.device}, farthest.shape={farthest.shape}, farthest[:5]={farthest[:5]}')
         centroid = xyz[batch_indices, farthest, :].view(B, 1, 3)
+        print('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
         dist = torch.sum((xyz - centroid) ** 2, dim=-1)
         distance = torch.min(distance, dist)
+        
         farthest = torch.argmax(distance, dim=-1)
+        print('cccccccccccccccccccccccccccccccccccccccc')
         idx[:, i] = farthest
     return idx.to(torch.int32)
 
