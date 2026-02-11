@@ -49,6 +49,10 @@ def furthest_point_sample(points: torch.Tensor, num_samples: int) -> torch.Tenso
     # points: (B, N, 3) 输入点云
     # num_samples: M 采样点数量
     # 返回: (B, M) 采样点索引
+    # 假返回：跳过FPS计算，测试后续流程
+    B, N, _ = points.shape
+    return torch.zeros(B, num_samples, dtype=torch.int32, device=points.device)
+
     B, N, _ = points.shape
     idxs = torch.zeros(B, num_samples, dtype=torch.long, device=points.device)
     dists = torch.ones(B, N, device=points.device) * 1e10  # 初始距离设为很大值
