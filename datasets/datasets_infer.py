@@ -3,6 +3,7 @@ import cv2
 import torch
 import copy
 import open3d as o3d
+import json
 
 from cutoop.data_loader import Dataset, ImageMetaData
 from utils.datasets_utils import aug_bbox_eval, get_2d_coord_np, crop_resize_by_warp_affine
@@ -29,7 +30,8 @@ class InferDataset(object):
         self._color: np.ndarray = data['color']
         self._mask: np.ndarray = data['mask']
         if isinstance(data['meta'], dict):
-            camera_intrinsics = data['meta']['camera']['intrinsics']
+            # camera_intrinsics = data['meta']['camera']['intrinsics']
+            camera_intrinsics = data['meta']
             camera_intrinsics = CameraIntrinsicsBase(
                 fx=camera_intrinsics['fx'],
                 fy=camera_intrinsics['fy'],
@@ -50,11 +52,20 @@ class InferDataset(object):
     
     @classmethod
     def alternetive_init(cls, prefix: str, img_size: int=224, device='cuda', n_pts=1024):
+        print('img size',{img_size})
+        print("device", device)
         prefix = prefix
         depth = Dataset.load_depth(prefix + 'depth.exr')
         color = Dataset.load_color(prefix + 'color.png')
-        mask = Dataset.load_mask(prefix + 'mask.exr')
-        meta = Dataset.load_meta(prefix + 'meta.json')
+        print(type(color))
+        print(color.shape)
+        print(color[0])
+        # mask = Dataset.load_mask(prefix + 'mask.exr')
+        # meta = Dataset.load_meta(prefix + 'meta.json')
+        mask = Dataset.load_mask(prefix.replace('color', 'mask') + 'mask.exr')
+        
+        # meta = Dataset.load_meta(prefix.replace('color', 'meta') + 'meta.json')
+        meta = json.load(open(prefix.replace('color', 'meta') + 'meta.json'))
         return cls({'depth': depth, 'color': color, 'mask': mask, 'meta': meta}, img_size=img_size, device=device, n_pts=n_pts)
 
 

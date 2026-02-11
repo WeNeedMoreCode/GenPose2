@@ -16,7 +16,7 @@ def get_config():
     parser.add_argument('--train_source', type=str, default='Omni6DPose')
     parser.add_argument('--val_source', type=str, default='Omni6DPose')
     parser.add_argument('--test_source', type=str, default='Omni6DPose')
-    parser.add_argument('--device', type=str, default='cuda')
+    parser.add_argument('--device', type=str, default='cpu')
     parser.add_argument('--num_points', type=int, default=1024)
     parser.add_argument('--per_obj', type=str, default='')
     parser.add_argument('--num_workers', type=int, default=32)

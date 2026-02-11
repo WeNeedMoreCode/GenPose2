@@ -41,7 +41,9 @@ class GFObjectPose(nn.Module):
         
         ''' dino v2 '''
         if cfg.dino != 'none':
-            self.dino : nn.Module = torch.hub.load('facebookresearch/dinov2', GFObjectPose.dino_name).to(cfg.device)
+            #self.dino : nn.Module = torch.hub.load('facebookresearch/dinov2', GFObjectPose.dino_name).to(cfg.device)
+            import ipdb;ipdb.set_trace()
+            self.dino : nn.Module = torch.hub.load('/home/huawei/.cache/torch/hub/facebookresearch_dinov2_main', GFObjectPose.dino_name, source='local').to(cfg.device)
             self.dino.requires_grad_(False)
             self.dino_dim = GFObjectPose.dino_dim
             self.embedding_dim = GFObjectPose.embedding_dim

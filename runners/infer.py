@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import numpy as np
@@ -8,7 +9,6 @@ import random
 import gc
 import cv2
 import open3d as o3d
-import pyrealsense2 as rs
 import pyrealsense2 as rs
 import numpy as np
 import glob
@@ -37,7 +37,7 @@ class GenPose2:
 
         ''' set random seed '''
         torch.manual_seed(self.cfg.seed)
-        torch.cuda.manual_seed(self.cfg.seed)
+        #torch.cuda.manual_seed(self.cfg.seed)
         random.seed(self.cfg.seed)
         np.random.seed(self.cfg.seed)
         ''' load score model '''
@@ -237,12 +237,24 @@ class GenPose2:
 def create_genpose2(score_model_path:str, energy_model_path:str, scale_model_path:str):
     return GenPose2(score_model_path, energy_model_path, scale_model_path)
 
-def visualize_pose(data:InferDataset, all_final_pose, all_final_length, visualize_pts=False, visualize_image=False):
-    color_img = cv2.cvtColor(data.color, cv2.COLOR_RGB2BGR)
+def visualize_pose(data:InferDataset, all_final_pose, all_final_length, visualize_pts=False, visualize_image=False, path=None):
+    # color_img = cv2.cvtColor(data.color, cv2.COLOR_RGB2BGR)
+    color_img = data.color
     all_final_pose = all_final_pose[0].cpu().numpy()
     all_final_length = all_final_length[0].cpu().numpy()
 
     for index, (obj_pose, obj_length) in enumerate(zip(all_final_pose, all_final_length)):
+        # print("pose type: ", type(obj_pose))
+        # print("len type", type(obj_length))
+        # print(obj_pose.shape)
+        # print(obj_length.shape)
+        # print(obj_pose)
+        # obj_pose, obj_length = swap_y_z_axis(obj_pose, obj_length)
+        # print("pose type: ", type(obj_pose))
+        # print("len type", type(obj_length))
+        # print(obj_pose.shape)
+        # print(obj_length.shape)
+        # print(obj_pose)
         if visualize_pts:
             pts = data.get_objects()['pts'].cpu().numpy()[index]
             pcd = o3d.geometry.PointCloud()
@@ -259,22 +271,107 @@ def visualize_pose(data:InferDataset, all_final_pose, all_final_length, visualiz
             draw_pred=True,
             draw_gt=False,
             draw_label=False,
-            draw_pred_axes_length=0.1,
+            draw_pred_axes_length=0.2,
             draw_gt_axes_length=None,
             thickness=True,
         )
+    # cv2.imwrite('/home/huawei/genpose2_without_cuda/data/rgb_genpose_outputs.png', color_img)
+    cv2.imwrite(path, color_img)
     
     if visualize_image:
         cv2.namedWindow('rgb')
         cv2.imshow('rgb', color_img)
-        cv2.waitKey() 
+        import ipdb;ipdb.set_trace()
+        cv2.imwrite('/home/huawei/genpose2_without_cuda/data/rgb_genpose_outputs.png', color_img)
+        cv2.waitKey(1) 
         cv2.destroyAllWindows()
     return color_img
 
+# def swap_y_z_axis(pose_matrix, length):
+#     """
+#     交换位姿矩阵和长度数组中的y轴与z轴
+    
+#     参数:
+#     pose_matrix: 4x4齐次变换矩阵 (numpy数组)
+#     length: 1x3长度数组 (numpy数组)
+    
+#     返回:
+#     transformed_pose: 转换后的4x4位姿矩阵
+#     transformed_length: 转换后的1x3长度数组
+#     """
+#     # 复制原始矩阵以避免修改原数据
+#     transformed_pose = pose_matrix.copy()
+    
+#     # 交换旋转矩阵的y轴和z轴 (第2列和第3列)
+#     transformed_pose[:3, [1, 2]] = transformed_pose[:3, [2, 1]]
+    
+#     # 交换平移向量的y和z分量
+#     transformed_pose[:3, 3][[1, 2]] = transformed_pose[:3, 3][[2, 1]]
+    
+#     # 交换长度数组的y和z分量
+#     transformed_length = length.copy()
+#     transformed_length[[1, 2]] = transformed_length[[2, 1]]
+    
+#     return transformed_pose, transformed_length
+
+def swap_y_z_axis(T, length):
+    # # 创建Y-Z轴交换的置换矩阵
+    # swap_matrix = np.array([[1, 0, 0],
+    #                        [0, 0, 1],
+    #                        [0, 1, 0]])
+    
+    # # 提取旋转矩阵和平移向量
+    # rotation = pose_matrix[:3, :3]
+    # translation = pose_matrix[:3, 3]
+    
+    # # 应用坐标轴交换 (旋转矩阵需要左右都乘交换矩阵以保持坐标系一致性)
+    # new_rotation = swap_matrix @ rotation @ swap_matrix.T
+    # new_translation = swap_matrix @ translation
+    
+    # # 创建新的位姿矩阵
+    # new_pose = np.eye(4)
+    # new_pose[:3, :3] = new_rotation
+    # new_pose[:3, 3] = new_translation
+
+    # 2. 定义目标旋转矩阵（x左、y前、z上）
+    R_target = np.array([
+        [-1, 0, 0],
+        [0, 1, 0],
+        [0, 0, -1]
+    ])
+
+    # 3. 提取原始旋转和平移
+    R = T[:3, :3]
+    t = T[:3, 3]
+
+    # 4. 计算旋转变换矩阵
+    R_transform = R_target @ R.T
+
+    # 5. 变换平移向量
+    t_new = R_transform @ t
+
+    # 6. 组合新位姿矩阵
+    T_new = np.eye(4)
+    T_new[:3, :3] = R_target
+    # T_new[:3, :3] = R
+
+    T_new[:3, 3] = t_new
+    T_new[:3, 3] = t
+
+    
+    # 交换长度数组中的Y和Z分量
+    new_length = length.copy()
+    # if new_length.ndim == 2:
+    #     new_length[0, [1, 2]] = new_length[0, [2, 1]]
+    # else:
+    #     new_length[[1, 2]] = new_length[[2, 1]]
+    
+    return T_new, new_length
 
 def main():
     ######################################## PARAMETERS ########################################
-    DATA_PATH = 'data/Omni6DPose/ROPE/000007'                 # Path to the data
+    import ipdb;ipdb.set_trace()
+    DATA_PATH = '../data/ROPE/000000/color'                  # Path to the data
     TRACKING = True                                           # Tracking mode
 
     # Tracking parameter, if the relative pose between the current frame and the previous frame
@@ -290,24 +387,92 @@ def main():
 
     ''' load data '''
     # Get data from image file
-    color_images = sorted(glob.glob(DATA_PATH + '/*_color.png'))
+    # color_images = sorted(glob.glob(DATA_PATH + '/*_color.png'))
     GenPose2 = create_genpose2(
         score_model_path=SCORE_MODEL_PATH, 
         energy_model_path=ENERGY_MODEL_PATH,
         scale_model_path=SCALE_MODEL_PATH,
     )
     
-    cv2.namedWindow('rgb')
-    for index, color_image in enumerate(tqdm(color_images)):
-        data_prefix = color_image.replace('color.png', '')
-        data = InferDataset.alternetive_init(data_prefix, img_size=GenPose2.cfg.img_size, device=GenPose2.cfg.device, n_pts=GenPose2.cfg.num_points)
-        pose, length = GenPose2.inference(data, PREV_POSE, TRACKING, TRACKING_T0)
-        color_image_w_pose = visualize_pose(data, pose, length, visualize_image=False)
-        PREV_POSE = pose
-        cv2.imshow('rgb', color_image_w_pose)
-        cv2.waitKey(1) 
+    # cv2.namedWindow('rgb')
+    # for index, color_image in enumerate(tqdm(color_images)):
+    #     data_prefix = color_image.replace('color.png', '')
+    #     data = InferDataset.alternetive_init(data_prefix, img_size=GenPose2.cfg.img_size, device=GenPose2.cfg.device, n_pts=GenPose2.cfg.num_points)
+    #     pose, length = GenPose2.inference(data, PREV_POSE, TRACKING, TRACKING_T0)
+    #     color_image_w_pose = visualize_pose(data, pose, length, visualize_image=False)
+    #     PREV_POSE = pose
+    #     cv2.imshow('rgb', color_image_w_pose)
+    #     cv2.waitKey(1) 
 
-    cv2.destroyAllWindows()    
+    # cv2.destroyAllWindows()
+    import time
+    # cv2.namedWindow('rgb')
+    # color_images = sorted(glob.glob(DATA_PATH + '/*_color.png'))
+    # for index, color_image in enumerate(tqdm(color_images)):
+    #     data_prefix = color_image.replace('color.png', '')
+    #     data = InferDataset.alternetive_init(data_prefix, img_size=GenPose2.cfg.img_size, device=GenPose2.cfg.device, n_pts=GenPose2.cfg.num_points)
+    #     t1 = time.perf_counter()
+    #     pose, length = GenPose2.inference(data, PREV_POSE, TRACKING, TRACKING_T0)
+    #     t2 = time.perf_counter()
+    #     print(f'inference time: {(t2 - t1)*1000:.2f}ms')
+    #     color_image_w_pose = visualize_pose(data, pose, length, visualize_image=False)
+    #     PREV_POSE = pose
+    #     cv2.imshow('rgb', color_image_w_pose)
+    #     cv2.waitKey(1) 
+    #     if index > 100:
+    #         break
+    rgb = cv2.imread('../data/rgb_genpose.png', cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
+    depth = np.load('../data/depth_genpose.npy')
+    mask = cv2.imread('../data/mask_genpose.png', cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
+    meta = json.load(open('../data/meta_genpose.json', 'r'))
+
+    data = InferDataset(
+        data={'color': rgb, 'depth': depth, 'mask': mask, 'meta': meta},
+        img_size=GenPose2.cfg.img_size,
+        device=GenPose2.cfg.device,
+        n_pts=GenPose2.cfg.num_points,
+    )
+    
+    t1 = time.perf_counter()
+    pose, length = GenPose2.inference(data, PREV_POSE, TRACKING, TRACKING_T0)
+    t2 = time.perf_counter()
+    print(f'inference time: {(t2 - t1)*1000:.2f}ms')
+    print(type(pose[0]))
+    # 交换位姿矩阵和长度数组中的y轴与z轴
+    # p, l = swap_y_z_axis(pose[0][0].numpy(), length[0].numpy())
+    # pose[0][0] = torch.tensor(p)
+    # length[0] = torch.tensor(l)
+    # ==== 添加位姿转换代码 ====
+    # 提取旋转矩阵R和平移向量T (假设pose[0]是目标物体位姿)
+    R = pose[0][0][:3, :3]  # 3x3旋转矩阵
+    T = pose[0][0][:3, 3]   # 平移向量 [x, y, z]
+
+    # 获取物体高度 (假设length的第三个元素是Z轴高度)
+    obj_height = length[0][0][1]  # 0.2617901
+
+    # 物体局部坐标系中从中心到底部的平移 (沿Z轴负方向移动半个高度)
+    translation_local = np.array([0, 0, -obj_height / 2])  # [0, 0, -0.130895]
+
+    # 将局部平移转换到相机坐标系 (旋转矩阵×局部平移)
+    translation_camera = R @ translation_local
+
+    # 更新平移向量 (原平移 + 转换后的局部平移)
+    new_T = T + translation_camera
+    pose[0][0][:3, 3] = new_T
+    # ===========================
+
+
+    print(pose[0])
+    t = pose[0].numpy()
+    print(type(t))
+    print(type(t[0]))
+    print(t[0])
+    l = length[0].numpy()
+    print(l)
+    import ipdb;ipdb.set_trace()
+    path = '../data/output.png'    
+    color_image_w_pose = visualize_pose(data, pose, length, visualize_image=False, path=path)
+    # cv2.imshow('rgb', color_image_w_pose)
 
 
 if __name__ == '__main__':

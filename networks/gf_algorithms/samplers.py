@@ -219,6 +219,7 @@ def cond_ode_sampler(
     
     num_steps = xs.shape[0]
     xs = xs.reshape(batch_size*num_steps, -1)
+    xs = xs.to(torch.float16)
     xs[:, :-3] = normalize_rotation(xs[:, :-3], pose_mode)
     xs = xs.reshape(num_steps, batch_size, -1)
     xs[:, :, -3:] += data['pts_center'].unsqueeze(0).repeat(xs.shape[0], 1, 1)
