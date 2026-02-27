@@ -3,7 +3,6 @@ import cv2
 import torch
 import copy
 import open3d as o3d
-import json
 
 from cutoop.data_loader import Dataset, ImageMetaData
 from utils.datasets_utils import aug_bbox_eval, get_2d_coord_np, crop_resize_by_warp_affine
@@ -30,8 +29,7 @@ class InferDataset(object):
         self._color: np.ndarray = data['color']
         self._mask: np.ndarray = data['mask']
         if isinstance(data['meta'], dict):
-            # camera_intrinsics = data['meta']['camera']['intrinsics']
-            camera_intrinsics = data['meta']
+            camera_intrinsics = data['meta']['camera']['intrinsics']
             camera_intrinsics = CameraIntrinsicsBase(
                 fx=camera_intrinsics['fx'],
                 fy=camera_intrinsics['fy'],
@@ -49,23 +47,14 @@ class InferDataset(object):
         self._device = device
         self._n_pts = n_pts
 
-    
+
     @classmethod
     def alternetive_init(cls, prefix: str, img_size: int=224, device='cuda', n_pts=1024):
-        print('img size',{img_size})
-        print("device", device)
         prefix = prefix
         depth = Dataset.load_depth(prefix + 'depth.exr')
         color = Dataset.load_color(prefix + 'color.png')
-        print(type(color))
-        print(color.shape)
-        print(color[0])
-        # mask = Dataset.load_mask(prefix + 'mask.exr')
-        # meta = Dataset.load_meta(prefix + 'meta.json')
-        mask = Dataset.load_mask(prefix.replace('color', 'mask') + 'mask.exr')
-        
-        # meta = Dataset.load_meta(prefix.replace('color', 'meta') + 'meta.json')
-        meta = json.load(open(prefix.replace('color', 'meta') + 'meta.json'))
+        mask = Dataset.load_mask(prefix + 'mask.exr')
+        meta = Dataset.load_meta(prefix + 'meta.json')
         return cls({'depth': depth, 'color': color, 'mask': mask, 'meta': meta}, img_size=img_size, device=device, n_pts=n_pts)
 
 
@@ -79,11 +68,11 @@ class InferDataset(object):
             assert False, "depth, mask, and rgb should have the same shape"
         intrinsics = self._meta.camera.intrinsics
         intrinsic_matrix = np.array([
-            [intrinsics.fx, 0,             intrinsics.cx], 
-            [0,             intrinsics.fy, intrinsics.cy], 
+            [intrinsics.fx, 0,             intrinsics.cx],
+            [0,             intrinsics.fy, intrinsics.cy],
             [0,             0,             0]
             ], dtype=np.float32)
-        
+
         img_width, img_height = self._color.shape[1], self._color.shape[0]
         scale_x = img_width / intrinsics.width
         scale_y = img_height / intrinsics.height
@@ -149,10 +138,10 @@ class InferDataset(object):
         data['roi_rgb_'] = torch.as_tensor(np.ascontiguousarray(roi_rgb_), dtype=torch.uint8).contiguous()
         data['roi_xs'] = torch.as_tensor(np.ascontiguousarray(xs), dtype=torch.int64).contiguous()
         data['roi_ys'] = torch.as_tensor(np.ascontiguousarray(ys), dtype=torch.int64).contiguous()
-        data['roi_center_dir'] = torch.as_tensor(pixel2xyz(img_height, img_height, bbox_center, intrinsics), dtype=torch.float32).contiguous()
+        data['roi_center_dir'] = torch.tensor(pixel2xyz(img_height, img_height, bbox_center, intrinsics), dtype=torch.float32).contiguous()
 
         return data
-    
+
 
     def get_objects(self):
         obj_idx = np.unique(self._mask)
@@ -163,11 +152,11 @@ class InferDataset(object):
             for key, value in obj.items():
                 if key not in objects:
                     objects[key] = []
-                objects[key].append(value)        
+                objects[key].append(value)
 
         for key, value in objects.items():
             objects[key] = torch.stack(value, dim=0)
-            
+
         PC_da = objects['pcl_in'].to(self._device)
         data = {}
         data['pts'] = PC_da                         # [bs, 1024, 3]
@@ -188,7 +177,7 @@ class InferDataset(object):
         data['pts_center'] = zero_mean
 
         return data
-    
+
 
     @property
     def color(self):
@@ -201,7 +190,7 @@ class InferDataset(object):
     @property
     def depth(self):
         return self._depth
-    
+
     @depth.setter
     def depth(self, depth):
         self._depth = depth
@@ -209,7 +198,7 @@ class InferDataset(object):
     @property
     def mask(self):
         return self._mask
-    
+
     @mask.setter
     def mask(self, mask):
         self._mask = mask
@@ -217,8 +206,7 @@ class InferDataset(object):
     @property
     def cam_intrinsics(self):
         return self._meta.camera.intrinsics
-    
+
     @cam_intrinsics.setter
     def cam_intrinsics(self, intrinsics):
         self._meta.camera.intrinsics = intrinsics
-
