@@ -280,7 +280,7 @@ def visualize_pose(data:InferDataset, all_final_pose, all_final_length, visualiz
 
 def main():
     ######################################## PARAMETERS ########################################
-    DATA_PATH = 'data/Omni6DPose/ROPE/000007'                 # Path to the data
+    DATA_PATH = 'omin6dpose-000/ROPE/000000/'                 # Path to the data
     TRACKING = True                                           # Tracking mode
 
     # Tracking parameter, if the relative pose between the current frame and the previous frame
