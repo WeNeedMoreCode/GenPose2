@@ -9,6 +9,8 @@ import torch_npu
 torch_npu.npu.set_compile_mode(jit_compile=False)
 import random
 import cv2
+# import open3d as o3d  # NPU不支持，已注释
+# import pyrealsense2 as rs  # 离线推理不需要，已注释
 import json
 import glob
 

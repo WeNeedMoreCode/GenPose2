@@ -2,7 +2,7 @@ import numpy as np
 import cv2
 import torch
 import copy
-import open3d as o3d
+# import open3d as o3d  # NPU不支持，已注释
 
 from cutoop.data_loader import Dataset, ImageMetaData
 from utils.datasets_utils import aug_bbox_eval, get_2d_coord_np, crop_resize_by_warp_affine

@@ -12,9 +12,8 @@ torch_npu.npu.set_compile_mode(jit_compile=False)
 import random
 import gc
 import cv2
-import open3d as o3d
-import pyrealsense2 as rs
-import pyrealsense2 as rs
+# import open3d as o3d  # NPU不支持，已注释
+# import pyrealsense2 as rs  # 离线推理不需要，已注释
 import numpy as np
 import glob
 
@@ -249,10 +248,12 @@ def visualize_pose(data:InferDataset, all_final_pose, all_final_length, visualiz
 
     for index, (obj_pose, obj_length) in enumerate(zip(all_final_pose, all_final_length)):
         if visualize_pts:
-            pts = data.get_objects()['pts'].cpu().numpy()[index]
-            pcd = o3d.geometry.PointCloud()
-            pcd.points = o3d.utility.Vector3dVector(pts)
-            o3d.visualization.draw_geometries([pcd])
+            # open3d 可视化已禁用（NPU不支持）
+            # pts = data.get_objects()['pts'].cpu().numpy()[index]
+            # pcd = o3d.geometry.PointCloud()
+            # pcd.points = o3d.utility.Vector3dVector(pts)
+            # o3d.visualization.draw_geometries([pcd])
+            print(f"Object {index}: visualize_pts is not supported (open3d disabled)")
         color_img = DetectMatch._draw_image(
             vis_img=color_img,
             pred_affine=obj_pose,
