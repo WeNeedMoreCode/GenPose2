@@ -77,7 +77,7 @@ class GatherOperation(Function):
         idx, C, N = ctx.for_backwards
         B, npoint = idx.size()
 
-        grad_features = Variable(torch.cuda.FloatTensor(B, C, N).zero_())
+        grad_features = Variable(torch.empty((B, C, N), dtype=torch.float32, device='npu:0').zero_())
         grad_out_data = grad_out.data.contiguous()
         pointnet2.gather_points_grad_wrapper(B, C, N, npoint, grad_out_data, idx, grad_features.data)
         return grad_features, None
@@ -104,8 +104,8 @@ class ThreeNN(Function):
 
         B, N, _ = unknown.size()
         m = known.size(1)
-        dist2 = torch.cuda.FloatTensor(B, N, 3)
-        idx = torch.cuda.IntTensor(B, N, 3)
+        dist2 = torch.empty((B, N, 3), dtype=torch.float32, device='npu:0')
+        idx = torch.empty((B, N, 3), dtype=torch.int32, device='npu:0')
 
         pointnet2.three_nn_wrapper(B, N, m, unknown, known, dist2, idx)
         return torch.sqrt(dist2), idx
@@ -138,7 +138,7 @@ class ThreeInterpolate(Function):
         B, c, m = features.size()
         n = idx.size(1)
         ctx.three_interpolate_for_backward = (idx, weight, m)
-        output = torch.cuda.FloatTensor(B, c, n)
+        output = torch.empty((B, c, n), dtype=torch.float32, device='npu:0')
 
         pointnet2.three_interpolate_wrapper(B, c, m, n, features, idx, weight, output)
         return output
@@ -156,7 +156,7 @@ class ThreeInterpolate(Function):
         idx, weight, m = ctx.three_interpolate_for_backward
         B, c, n = grad_out.size()
 
-        grad_features = Variable(torch.cuda.FloatTensor(B, c, m).zero_())
+        grad_features = Variable(torch.empty((B, c, m), dtype=torch.float32, device='npu:0').zero_())
         grad_out_data = grad_out.data.contiguous()
 
         pointnet2.three_interpolate_grad_wrapper(B, c, n, m, grad_out_data, idx, weight, grad_features.data)
@@ -182,7 +182,7 @@ class GroupingOperation(Function):
 
         B, nfeatures, nsample = idx.size()
         _, C, N = features.size()
-        output = torch.cuda.FloatTensor(B, C, nfeatures, nsample)
+        output = torch.empty((B, C, nfeatures, nsample), dtype=torch.float32, device='npu:0')
 
         pointnet2.group_points_wrapper(B, C, N, nfeatures, nsample, features, idx, output)
 
@@ -200,7 +200,7 @@ class GroupingOperation(Function):
         idx, N = ctx.for_backwards
 
         B, C, npoint, nsample = grad_out.size()
-        grad_features = Variable(torch.cuda.FloatTensor(B, C, N).zero_())
+        grad_features = Variable(torch.empty((B, C, N), dtype=torch.float32, device='npu:0').zero_())
 
         grad_out_data = grad_out.data.contiguous()
         pointnet2.group_points_grad_wrapper(B, C, N, npoint, nsample, grad_out_data, idx, grad_features.data)
@@ -228,7 +228,7 @@ class BallQuery(Function):
 
         B, N, _ = xyz.size()
         npoint = new_xyz.size(1)
-        idx = torch.cuda.IntTensor(B, npoint, nsample).zero_()
+        idx = torch.empty((B, npoint, nsample), dtype=torch.int32, device='npu:0').zero_()
 
         pointnet2.ball_query_wrapper(B, N, npoint, radius, nsample, new_xyz, xyz, idx)
         return idx
