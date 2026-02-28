@@ -19,8 +19,9 @@ def ve_marginal_prob(x, t, sigma_min=0.01, sigma_max=90):
 
 def ve_sde(t, sigma_min=0.01, sigma_max=90):
     sigma = sigma_min * (sigma_max / sigma_min) ** t
-    drift_coeff = torch.tensor(0)
-    diffusion_coeff = sigma * torch.sqrt(torch.tensor(2 * (np.log(sigma_max) - np.log(sigma_min)), device=t.device))
+    device = t.device if hasattr(t, 'device') else 'cpu'
+    drift_coeff = torch.tensor(0, device=device)
+    diffusion_coeff = sigma * torch.sqrt(torch.tensor(2 * (np.log(sigma_max) - np.log(sigma_min)), device=device))
     return drift_coeff, diffusion_coeff
 
 def ve_prior(shape, sigma_min=0.01, sigma_max=90, T=1.0):
@@ -70,7 +71,8 @@ def edm_marginal_prob(x, t, sigma_min=0.002, sigma_max=80):
     return mean, std
 
 def edm_sde(t, sigma_min=0.002, sigma_max=80):
-    drift_coeff = torch.tensor(0)
+    device = t.device if hasattr(t, 'device') else 'cpu'
+    drift_coeff = torch.tensor(0, device=device)
     diffusion_coeff = torch.sqrt(2 * t)
     return drift_coeff, diffusion_coeff
 
