@@ -227,8 +227,8 @@ def cond_ode_sampler(
     x[:, -3:] += data['pts_center']
 
     # [DEBUG] 采样器输出
-    debug_print('sampler', 'xs_output', xs.permute(1, 0, 2))
-    debug_print('sampler', 'x_output', x)
+    debug_print('sampler', 'xs_output', xs.permute(1, 0, 2), extra_info='[CUDA]')
+    debug_print('sampler', 'x_output', x, extra_info='[CUDA]')
 
     return xs.permute(1, 0, 2), x
 
