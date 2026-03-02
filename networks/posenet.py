@@ -203,13 +203,21 @@ class GFObjectPose(nn.Module):
         '''
         if mode == 'score':
             out_score = self.pose_score_net(data) # normalisation
-            # [DEBUG] Score网络输出
-            debug_print('score_net', 'out_score', out_score)
+            # [DEBUG] Score网络输出（仅第一次）
+            if not hasattr(self, '_debug_score_count'):
+                self._debug_score_count = 0
+            if self._debug_score_count < 1:
+                debug_print('score_net', 'out_score', out_score)
+                self._debug_score_count += 1
             return out_score
         elif mode == 'energy':
             out_energy = self.pose_score_net(data, return_item='energy')
-            # [DEBUG] Energy网络输出
-            debug_print('energy_net', 'out_energy', out_energy)
+            # [DEBUG] Energy网络输出（仅第一次）
+            if not hasattr(self, '_debug_energy_count'):
+                self._debug_energy_count = 0
+            if self._debug_energy_count < 1:
+                debug_print('energy_net', 'out_energy', out_energy)
+                self._debug_energy_count += 1
             return out_energy
         elif mode == 'likelihood':
             likelihoods = self.calc_likelihood(data)
