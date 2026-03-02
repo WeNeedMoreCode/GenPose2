@@ -32,6 +32,7 @@ from utils.so3_visualize import visualize_so3
 from utils.visualize import create_grid_image
 from cutoop.eval_utils import DetectMatch, Metrics
 from configs.config import get_config
+from utils.debug_utils import debug_print, debug_print_batch
 
 
 ''' load config '''
@@ -87,6 +88,12 @@ def inference_score(save_path):
             device=cfg.device,
             pose_mode=cfg.pose_mode,
         )
+
+        # [DEBUG] 第一批次：数据加载后
+        if i == 0:
+            debug_print_batch('data_loaded', batch_sample,
+                            keys=['pts', 'pts_center', 'roi_rgb'])
+
         pred_results = score_agent.pred_func(
             data=batch_sample,
             repeat_num=cfg.eval_repeat_num,
@@ -95,6 +102,11 @@ def inference_score(save_path):
             return_process=False
         )
         pred_pose, _ = pred_results
+
+        # [DEBUG] 第一批次：预测姿态后
+        if i == 0:
+            debug_print('eval', 'pred_pose_first_batch', pred_pose)
+
         all_pred_pose.append(pred_pose)
         all_score_feature.append({
             'pts_feat': batch_sample['pts_feat'].cpu(),

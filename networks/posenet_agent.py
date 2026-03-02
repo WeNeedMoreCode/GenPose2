@@ -28,6 +28,7 @@ from utils.misc import exists_or_mkdir, average_quaternion_batch, get_pose_repre
 from utils.visualize import create_grid_image, test_time_visulize
 from utils.metrics import get_metrics, get_rot_matrix
 from utils.transforms import *
+from utils.debug_utils import debug_print, debug_print_batch
 
 
  
@@ -477,6 +478,15 @@ class PoseNet(nn.Module):
             
             ''' Inference '''
             in_process_sample, res = self.net(repeated_data, mode=f'{self.cfg.sampler_mode[0]}_sample', init_x=repeated_init_x, T0=T0)
+
+            # [DEBUG] 采样结果（仅第一次调用时输出）
+            if not hasattr(self, '_debug_pred_count'):
+                self._debug_pred_count = 0
+            if self._debug_pred_count == 0:
+                debug_print('pred_func', 'in_process_sample', in_process_sample)
+                debug_print('pred_func', 'res', res)
+                self._debug_pred_count += 1
+
             pred_pose = res.reshape(bs, repeat_num, -1)
             in_process_sample = in_process_sample.reshape(bs, repeat_num, in_process_sample.shape[1], -1)
             
