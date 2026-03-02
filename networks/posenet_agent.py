@@ -2,6 +2,7 @@ import sys
 import os
 import torch
 import torch_npu
+torch_npu.npu.set_compile_mode(jit_compile=False)
 import time
 import functools
 import numpy as np

@@ -9,6 +9,7 @@ import _pickle as cPickle
 import pickle
 import torch
 import torch_npu
+torch_npu.npu.set_compile_mode(jit_compile=False)
 import torch.nn as nn
 import torch.nn.functional as F
 import copy
