@@ -456,9 +456,7 @@ class PoseNet(nn.Module):
         self.net.eval()
 
         with torch.no_grad():
-            print(f"[DEBUG-2] posenet_agent.py:  准备提取 pts_feature, pts shape: {data['pts'].shape}")
             data['pts_feat'] = self.net(data, mode='pts_feature')
-            print(f"[DEBUG-2] posenet_agent.py:  pts_feature 提取完成，shape: {data['pts_feat'].shape}")
             data['rgb_feat'] = self.net(data, mode='rgb_feature')
             bs = data['pts'].shape[0]
             self.pts_feature = True

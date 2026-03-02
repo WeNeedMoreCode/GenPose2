@@ -569,7 +569,7 @@ def rotation_6d_to_matrix(d6: torch.Tensor) -> torch.Tensor:
     Retrieved from http://arxiv.org/abs/1812.07035
     """
 
-    d6 = d6.to(torch.float16)
+    # d6 = d6.to(torch.float16)  # 注释掉float16，NPU上精度问题导致姿态估计失败
     a1, a2 = d6[..., :3], d6[..., 3:]
     b1 = F.normalize(a1, dim=-1)
     b2 = a2 - (b1 * a2).sum(-1, keepdim=True) * b1
