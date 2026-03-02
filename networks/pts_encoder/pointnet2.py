@@ -276,6 +276,18 @@ class Pointnet2ClsMSGFus(nn.Module):
         for i in range(len(self.SA_modules)):
             if i != 0:
                 l_features[i] = torch.concatenate([l_features[i], features], dim=1) # concatenate
+
+            # [DEBUG NPU] SA_module 输入检查
+            if not hasattr(self, '_debug_pn2_fus_input_count'):
+                self._debug_pn2_fus_input_count = 0
+            if self._debug_pn2_fus_input_count < 1:
+                print(f"[NPU DEBUG Pointnet2ClsMSGFus] SA_module {i} INPUT:")
+                print(f"  l_xyz[{i}]: shape={l_xyz[i].shape}, mean={l_xyz[i].mean():.6f}")
+                print(f"  l_features[{i}]: shape={l_features[i].shape}, min={l_features[i].min():.6f}, max={l_features[i].max():.6f}, mean={l_features[i].mean():.6f}")
+                if self._debug_pn2_fus_input_count == 0:
+                    print(f"  features (original): shape={features.shape}, min={features.min():.6f}, max={features.max():.6f}, mean={features.mean():.6f}")
+                self._debug_pn2_fus_input_count += 1
+
             li_xyz, li_features, idx = self.SA_modules[i](l_xyz[i], l_features[i], return_idx=True)
 
             # [DEBUG NPU] Pointnet2ClsMSGFus 每层输出
