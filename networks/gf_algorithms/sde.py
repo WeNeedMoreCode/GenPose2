@@ -26,7 +26,7 @@ def ve_sde(t, sigma_min=0.01, sigma_max=90):
 
 def ve_prior(shape, sigma_min=0.01, sigma_max=90, T=1.0):
     _, sigma_max_prior = ve_marginal_prob(None, T, sigma_min=sigma_min, sigma_max=sigma_max)
-    return torch.randn(*shape) * sigma_max_prior
+    return torch.randn(*shape, dtype=torch.float32) * sigma_max_prior
 
 #----- VP SDE -----
 #------------------
@@ -43,7 +43,7 @@ def vp_sde(t, beta_0=0.1, beta_1=20):
     return drift_coeff, diffusion_coeff
 
 def vp_prior(shape, beta_0=0.1, beta_1=20):
-    return torch.randn(*shape)
+    return torch.randn(*shape, dtype=torch.float32)
 
 #----- sub-VP SDE -----
 #----------------------
@@ -77,7 +77,7 @@ def edm_sde(t, sigma_min=0.002, sigma_max=80):
     return drift_coeff, diffusion_coeff
 
 def edm_prior(shape, sigma_min=0.002, sigma_max=80):
-    return torch.randn(*shape) * sigma_max
+    return torch.randn(*shape, dtype=torch.float32) * sigma_max
 
 def init_sde(sde_mode):
     # the SDE-related hyperparameters are copied from https://github.com/yang-song/score_sde_pytorch

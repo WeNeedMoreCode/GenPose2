@@ -203,8 +203,8 @@ def cond_ode_sampler(
         # num_steps, from T -> eps
         t_eval = np.linspace(T, eps, num_steps)
     res = integrate.solve_ivp(ode_func, (T, eps), init_x.reshape(-1).cpu().numpy(), rtol=rtol, atol=atol, method='RK45', t_eval=t_eval)
-    xs = torch.tensor(res.y, device=device).T.view(-1, batch_size, pose_dim) # [num_steps, bs, pose_dim]
-    x = torch.tensor(res.y[:, -1], device=device).reshape(shape) # [bs, pose_dim]
+    xs = torch.tensor(res.y, device=device, dtype=torch.float32).T.view(-1, batch_size, pose_dim) # [num_steps, bs, pose_dim]
+    x = torch.tensor(res.y[:, -1], device=device, dtype=torch.float32).reshape(shape) # [bs, pose_dim]
     # denoise, using the predictor step in P-C sampler
     if denoise:
         # Reverse diffusion predictor for denoising
@@ -252,10 +252,10 @@ def cond_edm_sampler(
         data, denoised = decoder(data)
         # recover data
         data['sampled_pose'], data['t'] = x_, t_
-        return denoised.to(torch.float64)
+        return denoised.to(torch.float32)
 
     # Main sampling loop.
-    x_next = latents.to(torch.float64) * t_steps[0]
+    x_next = latents.to(torch.float32) * t_steps[0]
     xs = []
     for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])): # 0, ..., N-1
         x_cur = x_next
