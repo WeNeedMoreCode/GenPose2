@@ -72,7 +72,13 @@ class _PointnetSAModuleBase(nn.Module):
             new_features = new_features.squeeze(-1)  # (B, mlp[-1], npoint)
             new_features_list.append(new_features)
 
+        # [DEBUG CUDA] 拼接前检查
         if hasattr(self, '_debug_sa_base_count') and self._debug_sa_base_count < 1:
+            print(f"[CUDA DEBUG SA_Base] Before concat:")
+            for j, nf in enumerate(new_features_list):
+                print(f"  new_features_list[{j}]: shape={nf.shape}, min={nf.min():.6f}, max={nf.max():.6f}, mean={nf.mean():.6f}")
+            concat_result = torch.cat(new_features_list, dim=1)
+            print(f"  concat_result: shape={concat_result.shape}, min={concat_result.min():.6f}, max={concat_result.max():.6f}, mean={concat_result.mean():.6f}")
             self._debug_sa_base_count += 1
 
         if return_idx:
