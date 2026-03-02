@@ -132,7 +132,7 @@ class GFObjectPose(nn.Module):
             raise NotImplementedError
 
         # [DEBUG] 点云特征提取后
-        debug_print('pts_feat', 'pts_feat_output', pts_feat)
+        debug_print('pts_feat', 'pts_feat_output', pts_feat, extra_info='[NPU]')
 
         return pts_feat
     
@@ -209,7 +209,7 @@ class GFObjectPose(nn.Module):
             if not hasattr(self, '_debug_score_count'):
                 self._debug_score_count = 0
             if self._debug_score_count < 1:
-                debug_print('score_net', 'out_score', out_score)
+                debug_print('score_net', 'out_score', out_score, extra_info='[NPU]')
                 self._debug_score_count += 1
             return out_score
         elif mode == 'energy':
