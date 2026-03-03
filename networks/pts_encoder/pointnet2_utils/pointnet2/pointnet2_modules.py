@@ -56,12 +56,20 @@ class _PointnetSAModuleBase(nn.Module):
             if not hasattr(self, '_debug_sa_base_count'):
                 self._debug_sa_base_count = 0
             if self._debug_sa_base_count < 1:
-                print(f"[NPU DEBUG SA_Base] MLP {i} output: shape={new_features.shape}, min={new_features.min():.6f}, max={new_features.max():.6f}, mean={new_features.mean():.6f}")
+                print(f"[NPU DEBUG SA_Base] MLP {i} output: shape={new_features.shape}, is_contiguous={new_features.is_contiguous()}, min={new_features.min():.6f}, max={new_features.max():.6f}, mean={new_features.mean():.6f}")
 
             if self.pool_method == 'max_pool':
+                # [DEBUG NPU] max_pool2d 前检查
+                if hasattr(self, '_debug_sa_base_count') and self._debug_sa_base_count < 1:
+                    print(f"[NPU DEBUG SA_Base] Before max_pool2d: shape={new_features.shape}, is_contiguous={new_features.is_contiguous()}, min={new_features.min():.6f}, max={new_features.max():.6f}")
+
                 new_features = F.max_pool2d(
                     new_features, kernel_size=[1, new_features.size(3)]
                 )  # (B, mlp[-1], npoint, 1)
+
+                # [DEBUG NPU] max_pool2d 后检查
+                if hasattr(self, '_debug_sa_base_count') and self._debug_sa_base_count < 1:
+                    print(f"[NPU DEBUG SA_Base] After max_pool2d: shape={new_features.shape}, is_contiguous={new_features.is_contiguous()}, min={new_features.min():.6f}, max={new_features.max():.6f}")
             elif self.pool_method == 'avg_pool':
                 new_features = F.avg_pool2d(
                     new_features, kernel_size=[1, new_features.size(3)]
