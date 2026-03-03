@@ -2,7 +2,6 @@ import torch
 
 # -------------------------- 工具函数（内部使用，不对外暴露） --------------------------
 def _furthest_point_sampling(xyz, npoints):
-    """纯PyTorch实现FPS核心逻辑"""
     B, N, _ = xyz.shape
     device = xyz.device
     idx = torch.zeros((B, npoints), dtype=torch.int64, device=device)
@@ -11,19 +10,53 @@ def _furthest_point_sampling(xyz, npoints):
     farthest = torch.zeros((B,), dtype=torch.int64, device=device)
     idx[:, 0] = farthest
 
+    # 1. 必须和CUDA的block_size一致（关键！）
+    block_size = 512  # 你的CUDA版本n_threads=512
+
     for i in range(1, npoints):
         centroid = xyz[batch_indices, farthest, :].view(B, 1, 3)
         dist = torch.sum((xyz - centroid) ** 2, dim=-1)
         distance = torch.min(distance, dist)
-        # [NPU MODIFIED] 反向argmax：多个相同值时选择最后一个
-        farthest = distance.shape[1] - 1 - torch.flip(distance, dims=[1]).argmax(dim=-1)
+        
+        # 2. 模拟CUDA的线程分片：每个tid处理k=tid, tid+block_size...
+        # 步骤1：创建分片索引（模拟每个线程的处理范围）
+        tid_indices = []
+        for tid in range(block_size):
+            # 每个tid处理的点索引：tid, tid+block_size, tid+2*block_size...
+            k_list = torch.arange(tid, N, block_size, device=device, dtype=torch.int64)
+            tid_indices.append(k_list)
+        
+        # 步骤2：每个分片找最大值（模拟单个线程的besti）
+        tid_max_vals = []
+        tid_max_idxs = []
+        for tid in range(block_size):
+            k_list = tid_indices[tid]
+            if len(k_list) == 0:
+                tid_max_vals.append(torch.tensor(-1.0, device=device))
+                tid_max_idxs.append(torch.tensor(0, device=device))
+                continue
+            # 取当前tid处理的点的距离
+            tid_dist = distance[:, k_list]
+            # 每个tid找自己分片内的最大值
+            max_val, max_idx = torch.max(tid_dist, dim=-1)
+            # 转换回全局索引
+            global_idx = k_list[max_idx]
+            tid_max_vals.append(max_val)
+            tid_max_idxs.append(global_idx)
+        
+        # 步骤3：归约所有tid的结果（模拟__update，相等时保留tid更小的）
+        tid_max_vals = torch.stack(tid_max_vals, dim=1)  # (B, block_size)
+        tid_max_idxs = torch.stack(tid_max_idxs, dim=1)  # (B, block_size)
+        # 找所有tid中最大值的索引（相等时保留第一个tid，即tid更小的）
+        global_max_val, global_tid = torch.max(tid_max_vals, dim=1)
+        # 按tid取最终的全局索引
+        farthest = torch.gather(tid_max_idxs, 1, global_tid.unsqueeze(1)).squeeze(1)
 
-        # [DEBUG] 第一次迭代：打印关键点的距离值
+        # 保留你的debug逻辑
         if i == 1:
             print(f"[FPS NPU DEBUG] Iteration 1 (first batch):")
             print(f"  Selected idx: {farthest[0].item()}")
             print(f"  Distance at selected idx: {distance[0, farthest[0]].item():.10f}")
-            # 打印距离最大的前5个点和值
             top5_dist, top5_idx = torch.topk(distance[0], k=5)
             print(f"  Top 5 distances:")
             for j in range(5):
