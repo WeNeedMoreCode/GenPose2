@@ -69,7 +69,15 @@ class _PointnetSAModuleBase(nn.Module):
             else:
                 raise NotImplementedError
 
+            # [DEBUG CUDA] squeeze 前后检查
+            if hasattr(self, '_debug_sa_base_count') and self._debug_sa_base_count < 1:
+                print(f"[CUDA DEBUG SA_Base] Before squeeze: shape={new_features.shape}, min={new_features.min():.6f}, max={new_features.max():.6f}")
+
             new_features = new_features.squeeze(-1)  # (B, mlp[-1], npoint)
+
+            if hasattr(self, '_debug_sa_base_count') and self._debug_sa_base_count < 1:
+                print(f"[CUDA DEBUG SA_Base] After squeeze: shape={new_features.shape}, min={new_features.min():.6f}, max={new_features.max():.6f}")
+
             new_features_list.append(new_features)
 
         # [DEBUG CUDA] 拼接前检查
