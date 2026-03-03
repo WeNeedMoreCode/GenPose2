@@ -58,10 +58,10 @@ def get_dataloader():
         dataset,
         batch_size=cfg.batch_size,
         shuffle=False,
-        num_workers=cfg.num_workers,
-        persistent_workers=True,
+        num_workers=0,
+        persistent_workers=False,
         drop_last=False,
-        pin_memory=True,
+        pin_memory=False,
     )
     return dataloader
 
@@ -78,11 +78,6 @@ def inference_score(save_path):
 
     all_pred_pose = []
     all_score_feature = []
-
-    # [CUDA] Fix random seed for consistent data loading
-    random.seed(42)
-    np.random.seed(42)
-    torch.manual_seed(42)
 
     for i, test_batch in enumerate(tqdm(dataloader, desc="score sampling")):
         batch_sample = process_batch(
@@ -350,6 +345,11 @@ def visualize_pose_distribution(score_path, dm_path):
             )
             all_dm.draw_image(index=index)
             set_trace()
+
+# [CUDA] Fix random seed before data loading (must be before makedirs)
+random.seed(cfg.seed)
+np.random.seed(cfg.seed)
+torch.manual_seed(cfg.seed)
 
 os.makedirs(f'results/evaluation_results/{cfg.result_dir}', exist_ok=True)
 
