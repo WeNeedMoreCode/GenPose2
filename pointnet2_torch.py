@@ -2,55 +2,85 @@ import torch
 
 # -------------------------- 工具函数（内部使用，不对外暴露） --------------------------
 def _furthest_point_sampling(xyz, npoints):
+    """
+    纯PyTorch实现FPS（精准对齐CUDA分层归约+GPU并行加速）
+    核心：用向量化操作替代显式for循环，模拟CUDA的分层归约逻辑
+    """
     B, N, _ = xyz.shape
     device = xyz.device
     idx = torch.zeros((B, npoints), dtype=torch.int64, device=device)
-    distance = torch.ones((B, N), device=device, dtype=torch.float32) * 1e10
+    distance = torch.full((B, N), fill_value=1e10, dtype=torch.float32, device=device)
     batch_indices = torch.arange(B, device=device)
     farthest = torch.zeros((B,), dtype=torch.int64, device=device)
     idx[:, 0] = farthest
 
-    # 1. 必须和CUDA的block_size一致（关键！）
-    block_size = 512  # 你的CUDA版本n_threads=512
+    # 1. 固定block_size为512（和你的CUDA版本一致）
+    block_size = 512
+    # 预先生成线程分片索引（向量化，仅生成一次，避免循环）
+    tid = torch.arange(block_size, device=device, dtype=torch.int64)  # [0,1,...,511]
+    # 每个tid处理的点索引：tid, tid+512, tid+1024...（向量化生成）
+    k_grid = tid.unsqueeze(1) + torch.arange(0, N, block_size, device=device).unsqueeze(0)
+    k_grid = k_grid.clamp(max=N-1)  # 防止越界
+    # 生成有效掩码（避免处理超出N的点）
+    valid_mask = k_grid < N
 
     for i in range(1, npoints):
+        # 计算当前最远点到所有点的距离（向量化，GPU并行）
         centroid = xyz[batch_indices, farthest, :].view(B, 1, 3)
         dist = torch.sum((xyz - centroid) ** 2, dim=-1)
         distance = torch.min(distance, dist)
-        
-        # 2. 模拟CUDA的线程分片：每个tid处理k=tid, tid+block_size...
-        # 步骤1：创建分片索引（模拟每个线程的处理范围）
-        tid_indices = []
-        for tid in range(block_size):
-            # 每个tid处理的点索引：tid, tid+block_size, tid+2*block_size...
-            k_list = torch.arange(tid, N, block_size, device=device, dtype=torch.int64)
-            tid_indices.append(k_list)
-        
-        # 步骤2：每个分片找最大值（模拟单个线程的besti）
-        tid_max_vals = []
-        tid_max_idxs = []
-        for tid in range(block_size):
-            k_list = tid_indices[tid]
-            if len(k_list) == 0:
-                tid_max_vals.append(torch.tensor(-1.0, device=device))
-                tid_max_idxs.append(torch.tensor(0, device=device))
-                continue
-            # 取当前tid处理的点的距离
-            tid_dist = distance[:, k_list]
-            # 每个tid找自己分片内的最大值
-            max_val, max_idx = torch.max(tid_dist, dim=-1)
-            # 转换回全局索引
-            global_idx = k_list[max_idx]
-            tid_max_vals.append(max_val)
-            tid_max_idxs.append(global_idx)
-        
-        # 步骤3：归约所有tid的结果（模拟__update，相等时保留tid更小的）
-        tid_max_vals = torch.stack(tid_max_vals, dim=1)  # (B, block_size)
-        tid_max_idxs = torch.stack(tid_max_idxs, dim=1)  # (B, block_size)
-        # 找所有tid中最大值的索引（相等时保留第一个tid，即tid更小的）
-        global_max_val, global_tid = torch.max(tid_max_vals, dim=1)
-        # 按tid取最终的全局索引
-        farthest = torch.gather(tid_max_idxs, 1, global_tid.unsqueeze(1)).squeeze(1)
+
+        # 2. 向量化模拟CUDA线程分片：每个tid计算分片内的最大值（无显式循环）
+        # 扩展distance维度，匹配k_grid形状 (B, 512, 2)
+        dist_expand = distance[:, k_grid]
+        # 用掩码过滤无效点（赋值为-1，不影响max）
+        dist_expand = torch.where(valid_mask, dist_expand, torch.tensor(-1.0, device=device))
+        # 每个tid找分片内的最大值和索引（向量化，GPU并行）
+        tid_max_val, tid_max_idx_local = torch.max(dist_expand, dim=-1)  # (B,512)
+        # 转换为全局索引
+        tid_max_idx = k_grid.gather(1, tid_max_idx_local.unsqueeze(1)).squeeze(1)  # (B,512)
+
+        # 3. 向量化模拟CUDA分层归约（1024→512→256→128→64→32→16→8→4→2→1）
+        # 核心：每一层只合并相邻tid，相等时保留前一个（小tid）的索引
+        def reduce_layer(vals, idxs, split):
+            """模拟CUDA的__update函数，分层归约"""
+            if split < 1:
+                return vals, idxs
+            # 前半部分tid
+            val1 = vals[:, :split]
+            idx1 = idxs[:, :split]
+            # 后半部分tid
+            val2 = vals[:, split:2*split]
+            idx2 = idxs[:, split:2*split]
+            # 模拟__update：v2>v1时替换，否则保留原索引
+            mask = val2 > val1
+            new_val = torch.where(mask, val2, val1)
+            new_idx = torch.where(mask, idx2, idx1)
+            return new_val, new_idx
+
+        # 严格按CUDA的归约层级执行
+        vals, idxs = tid_max_val, tid_max_idx
+        if block_size >= 512:
+            vals, idxs = reduce_layer(vals, idxs, 256)
+        if block_size >= 256:
+            vals, idxs = reduce_layer(vals, idxs, 128)
+        if block_size >= 128:
+            vals, idxs = reduce_layer(vals, idxs, 64)
+        if block_size >= 64:
+            vals, idxs = reduce_layer(vals, idxs, 32)
+        if block_size >= 32:
+            vals, idxs = reduce_layer(vals, idxs, 16)
+        if block_size >= 16:
+            vals, idxs = reduce_layer(vals, idxs, 8)
+        if block_size >= 8:
+            vals, idxs = reduce_layer(vals, idxs, 4)
+        if block_size >= 4:
+            vals, idxs = reduce_layer(vals, idxs, 2)
+        if block_size >= 2:
+            vals, idxs = reduce_layer(vals, idxs, 1)
+
+        # 最终取归约后的索引（tid=0的结果）
+        farthest = idxs[:, 0]
 
         # 保留你的debug逻辑
         if i == 1:
@@ -63,6 +93,7 @@ def _furthest_point_sampling(xyz, npoints):
                 print(f"    idx={top5_idx[j].item()}, dist={top5_dist[j].item():.10f}")
 
         idx[:, i] = farthest
+
     return idx.to(torch.int32)
 
 def _gather_points(features, idx):
