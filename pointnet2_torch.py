@@ -3,48 +3,20 @@ import torch
 # -------------------------- 工具函数（内部使用，不对外暴露） --------------------------
 def _furthest_point_sampling(xyz, npoints):
     """纯PyTorch实现FPS核心逻辑"""
-    print(f"[FPS PyTorch] ===== START FPS: B=?, N=?, npoints={npoints} =====")
-
     B, N, _ = xyz.shape
-    print(f"[FPS PyTorch] Step 1: Got shape B={B}, N={N}, C=3")
-
     device = xyz.device
-    print(f"[FPS PyTorch] Step 2: Got device={device}")
-
     idx = torch.zeros((B, npoints), dtype=torch.int64, device=device)
-    print(f"[FPS PyTorch] Step 3: Created idx zeros, shape={idx.shape}, dtype={idx.dtype}")
-
     distance = torch.ones((B, N), device=device, dtype=torch.float32) * 1e10
-    print(f"[FPS PyTorch] Step 4: Created distance ones*1e10, shape={distance.shape}, mean={distance.mean():.6f}")
-
     batch_indices = torch.arange(B, device=device)
-    print(f"[FPS PyTorch] Step 5: Created batch_indices={batch_indices.tolist()}")
-
     farthest = torch.zeros((B,), dtype=torch.int64, device=device)
-    print(f"[FPS PyTorch] Step 6: Created farthest zeros, farthest={farthest.tolist()}")
-
     idx[:, 0] = farthest
-    print(f"[FPS PyTorch] Step 7: Set idx[:,0]=farthest, idx[:,0]={idx[:, 0].tolist()}")
 
     for i in range(1, npoints):
-        print(f"\n[FPS PyTorch] ===== Iteration {i} =====")
-
         centroid = xyz[batch_indices, farthest, :].view(B, 1, 3)
-        print(f"[FPS PyTorch] Iter{i}.1: Got centroid, shape={centroid.shape}, sample={centroid[0, 0].tolist()}")
-
         dist = torch.sum((xyz - centroid) ** 2, dim=-1)
-        print(f"[FPS PyTorch] Iter{i}.2: Computed dist, shape={dist.shape}, min={dist.min():.6f}, max={dist.max():.6f}")
-
         distance = torch.min(distance, dist)
-        print(f"[FPS PyTorch] Iter{i}.3: Updated distance (min), min={distance.min():.6f}, max={distance.max():.6f}")
-
         farthest = torch.argmax(distance, dim=-1)
-        print(f"[FPS PyTorch] Iter{i}.4: argmax distance, farthest={farthest.tolist()}")
-
         idx[:, i] = farthest
-        print(f"[FPS PyTorch] Iter{i}.5: Set idx[:,i]=farthest, idx[:,{i}]={idx[:, i].tolist()}")
-
-    print(f"[FPS PyTorch] ===== END FPS =====\n")
     return idx.to(torch.int32)
 
 def _gather_points(features, idx):
@@ -135,10 +107,20 @@ def furthest_point_sampling_wrapper(B, N, m, points_tensor, temp_tensor, idx_ten
     参数：B(批次), N(总点数), m(采样点数), points_tensor(点云BxNx3), temp_tensor(临时张量), idx_tensor(输出索引)
     作用：直接修改idx_tensor的值（与原CUDA算子行为一致）
     """
+    # [NPU DEBUG] Before calling FPS
+    print(f"[FPS NPU Python] B={B}, N={N}, npoint={m}")
+    print(f"[FPS NPU Python] xyz sample first 3 points: {points_tensor[0, :3].tolist()}")
+
     # 调用纯PyTorch FPS核心逻辑
     idx = _furthest_point_sampling(points_tensor, m)
+
     # 把结果写入传入的idx_tensor（模拟原CUDA算子的in-place修改）
     idx_tensor.copy_(idx)
+
+    # [NPU DEBUG] After calling FPS
+    print(f"[FPS NPU Python] Result idx (first batch, first 10): {idx_tensor[0, :10].tolist()}")
+    print(f"[FPS NPU Python] Result idx (first batch, last 10): {idx_tensor[0, -10:].tolist()}")
+
     return 1  # 原CUDA版本返回1，保持一致
 
 def gather_points_wrapper(B, C, N, npoints, points_tensor, idx_tensor, out_tensor):

@@ -351,9 +351,9 @@ def visualize_pose_distribution(score_path, dm_path):
             set_trace()
 
 # [NPU] Fix random seed before data loading (must be before makedirs)
-random.seed(cfg.seed)
-np.random.seed(cfg.seed)
-torch.manual_seed(cfg.seed)
+random.seed(42)
+np.random.seed(42)
+torch.manual_seed(42)
 
 os.makedirs(f'results/evaluation_results/{cfg.result_dir}', exist_ok=True)
 
