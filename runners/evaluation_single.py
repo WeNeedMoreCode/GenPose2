@@ -79,6 +79,11 @@ def inference_score(save_path):
     all_pred_pose = []
     all_score_feature = []
 
+    # [CUDA] Fix random seed for consistent data loading
+    random.seed(42)
+    np.random.seed(42)
+    torch.manual_seed(42)
+
     for i, test_batch in enumerate(tqdm(dataloader, desc="score sampling")):
         batch_sample = process_batch(
             batch_sample = test_batch,
