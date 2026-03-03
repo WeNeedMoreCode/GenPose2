@@ -1,10 +1,15 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import logging
 
 from . import pointnet2_utils
 from . import pytorch_utils as pt_utils
 from typing import List
+
+# Setup logger for CUDA version
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.WARNING)
 
 
 class _PointnetSAModuleBase(nn.Module):
@@ -33,16 +38,26 @@ class _PointnetSAModuleBase(nn.Module):
         idx = None
         if new_xyz is None:
             if self.npoint is not None:
+                # ===== 监测1: furthest_point_sample =====
+                logger.warning(f"[CUDA OP MONITOR] Before furthest_point_sample: xyz shape={xyz.shape}, dtype={xyz.dtype}, min={xyz.min():.6f}, max={xyz.max():.6f}, mean={xyz.mean():.6f}")
                 idx = pointnet2_utils.furthest_point_sample(xyz, self.npoint)
+                logger.warning(f"[CUDA OP MONITOR] After furthest_point_sample: idx shape={idx.shape}, dtype={idx.dtype}, min={idx.min()}, max={idx.max()}")
+
+                # ===== 监测2: gather_operation =====
+                logger.warning(f"[CUDA OP MONITOR] Before gather_operation: xyz_flipped shape={xyz_flipped.shape}, idx shape={idx.shape}")
                 new_xyz = pointnet2_utils.gather_operation(
                     xyz_flipped,
                     idx
                 ).transpose(1, 2).contiguous()
+                logger.warning(f"[CUDA OP MONITOR] After gather_operation: new_xyz shape={new_xyz.shape}, dtype={new_xyz.dtype}, min={new_xyz.min():.6f}, max={new_xyz.max():.6f}, mean={new_xyz.mean():.6f}")
             else:
                 new_xyz = None
 
         for i in range(len(self.groupers)):
+            # ===== 监测3+4: grouper (ball_query + grouping_operation) =====
+            logger.warning(f"[CUDA OP MONITOR] Before grouper[{i}]: xyz shape={xyz.shape}, new_xyz shape={new_xyz.shape if new_xyz is not None else None}, features shape={features.shape if features is not None else None}")
             new_features = self.groupers[i](xyz, new_xyz, features)  # (B, C, npoint, nsample)
+            logger.warning(f"[CUDA OP MONITOR] After grouper[{i}]: new_features shape={new_features.shape}, dtype={new_features.dtype}, min={new_features.min():.6f}, max={new_features.max():.6f}, mean={new_features.mean():.6f}, is_contiguous={new_features.is_contiguous()}")
 
             # [DEBUG CUDA] grouper 输出检查
             if not hasattr(self, '_debug_sa_base_count'):
