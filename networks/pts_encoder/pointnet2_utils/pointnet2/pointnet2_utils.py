@@ -23,10 +23,20 @@ class FurthestPointSampling(Function):
         assert xyz.is_contiguous()
 
         B, N, _ = xyz.size()
+
+        # [CUDA DEBUG] Before calling CUDA kernel
+        print(f"[FPS CUDA Python] B={B}, N={N}, npoint={npoint}")
+        print(f"[FPS CUDA Python] xyz sample first 3 points: {xyz[0, :3].tolist()}")
+
         output = torch.cuda.IntTensor(B, npoint)
         temp = torch.cuda.FloatTensor(B, N).fill_(1e10)
 
         pointnet2.furthest_point_sampling_wrapper(B, N, npoint, xyz, temp, output)
+
+        # [CUDA DEBUG] After calling CUDA kernel
+        print(f"[FPS CUDA Python] Result idx (first batch, first 10): {output[0, :10].tolist()}")
+        print(f"[FPS CUDA Python] Result idx (first batch, last 10): {output[0, -10:].tolist()}")
+
         return output
 
     @staticmethod

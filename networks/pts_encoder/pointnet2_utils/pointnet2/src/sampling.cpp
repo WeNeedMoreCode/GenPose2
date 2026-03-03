@@ -1,7 +1,6 @@
 #include <torch/serialize/tensor.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <vector>
-#include <cstdio>
 // #include <THC/THC.h>
 
 #include "sampling_gpu.h"
@@ -41,37 +40,12 @@ int gather_points_grad_wrapper_fast(int b, int c, int n, int npoints,
 int furthest_point_sampling_wrapper(int b, int n, int m,
     at::Tensor points_tensor, at::Tensor temp_tensor, at::Tensor idx_tensor) {
 
-    printf("[FPS CUDA] ===== START FPS: B=%d, N=%d, M=%d =====\n", b, n, m);
-
     const float *points = points_tensor.data<float>();
-    printf("[FPS CUDA] Step 1: Got points pointer\n");
-
     float *temp = temp_tensor.data<float>();
-    printf("[FPS CUDA] Step 2: Got temp pointer\n");
-
     int *idx = idx_tensor.data<int>();
-    printf("[FPS CUDA] Step 3: Got idx pointer\n");
 
-    // Print sample input points
-    printf("[FPS CUDA] Step 4: First 3 points: ");
-    for (int i = 0; i < 3; i++) {
-        printf("(%.6f,%.6f,%.6f) ", points[i*3], points[i*3+1], points[i*3+2]);
-    }
-    printf("\n");
-
+    // cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    printf("[FPS CUDA] Step 5: Got CUDA stream\n");
-
-    printf("[FPS CUDA] Step 6: Calling FPS kernel...\n");
     furthest_point_sampling_kernel_launcher(b, n, m, points, temp, idx, stream);
-
-    // Print result
-    printf("[FPS CUDA] Step 7: Kernel finished, sampled indices (first batch): ");
-    for (int i = 0; i < m; i++) {
-        printf("%d ", idx[i]);
-    }
-    printf("\n");
-
-    printf("[FPS CUDA] ===== END FPS =====\n\n");
     return 1;
 }
