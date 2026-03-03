@@ -15,7 +15,8 @@ def _furthest_point_sampling(xyz, npoints):
         centroid = xyz[batch_indices, farthest, :].view(B, 1, 3)
         dist = torch.sum((xyz - centroid) ** 2, dim=-1)
         distance = torch.min(distance, dist)
-        farthest = torch.argmax(distance, dim=-1)
+        # [NPU MODIFIED] 反向argmax：多个相同值时选择最后一个
+        farthest = distance.shape[1] - 1 - torch.flip(distance, dims=[1]).argmax(dim=-1)
 
         # [DEBUG] 第一次迭代：打印关键点的距离值
         if i == 1:
