@@ -9,6 +9,7 @@ import _pickle as cPickle
 import pickle
 import torch
 import torch_npu
+import random
 torch_npu.npu.set_compile_mode(jit_compile=False)
 import torch.nn as nn
 import torch.nn.functional as F
@@ -81,6 +82,11 @@ def inference_score(save_path):
 
     all_pred_pose = []
     all_score_feature = []
+
+    # [NPU] Fix random seed for consistent data loading
+    random.seed(42)
+    np.random.seed(42)
+    torch.manual_seed(42)
 
     for i, test_batch in enumerate(tqdm(dataloader, desc="score sampling")):
         batch_sample = process_batch(
