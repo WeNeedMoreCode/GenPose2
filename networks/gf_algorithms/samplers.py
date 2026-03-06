@@ -8,7 +8,6 @@ from ipdb import set_trace
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from utils.genpose_utils import get_pose_dim
 from utils.misc import normalize_rotation
-from utils.debug_utils import debug_print, debug_print_batch
 
 
 def global_prior_likelihood(z, sigma_max):
@@ -226,10 +225,6 @@ def cond_ode_sampler(
     xs[:, :, -3:] += data['pts_center'].unsqueeze(0).repeat(xs.shape[0], 1, 1)
     x[:, :-3] = normalize_rotation(x[:, :-3], pose_mode)
     x[:, -3:] += data['pts_center']
-
-    # [DEBUG] 采样器输出
-    debug_print('sampler', 'xs_output', xs.permute(1, 0, 2), extra_info='[NPU]')
-    debug_print('sampler', 'x_output', x, extra_info='[NPU]')
 
     return xs.permute(1, 0, 2), x
 

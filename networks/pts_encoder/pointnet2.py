@@ -206,21 +206,6 @@ class Pointnet2ClsMSG(nn.Module):
         l_xyz, l_features = [xyz], [features]
         for i in range(len(self.SA_modules)):
             li_xyz, li_features = self.SA_modules[i](l_xyz[i], l_features[i])
-
-            # [DEBUG] PointNet2 每层输出
-            if not hasattr(self, '_debug_pn2_count'):
-                self._debug_pn2_count = 0
-            if self._debug_pn2_count < 1:
-                print(f"[DEBUG PointNet2] SA_module {i} output:")
-                print(f"  li_xyz: shape={li_xyz.shape}, mean={li_xyz.mean():.6f}, std={li_xyz.std():.6f}")
-                print(f"  li_features: shape={li_features.shape}, min={li_features.min():.6f}, max={li_features.max():.6f}, mean={li_features.mean():.6f}, std={li_features.std():.6f}")
-
-                # 检查该模块的 BatchNorm 统计
-                for name, module in self.SA_modules[i].named_modules():
-                    if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d)):
-                        print(f"  BN {name}: running_mean mean={module.running_mean.mean():.6f}, running_var mean={module.running_var.mean():.6f}")
-                self._debug_pn2_count += 1
-
             l_xyz.append(li_xyz)
             l_features.append(li_features)
         return l_features[-1].squeeze(-1)
@@ -277,32 +262,7 @@ class Pointnet2ClsMSGFus(nn.Module):
             if i != 0:
                 l_features[i] = torch.concatenate([l_features[i], features], dim=1) # concatenate
 
-            # [DEBUG NPU] SA_module 输入检查
-            if not hasattr(self, '_debug_pn2_fus_input_count'):
-                self._debug_pn2_fus_input_count = 0
-            if self._debug_pn2_fus_input_count < 1:
-                print(f"[NPU DEBUG Pointnet2ClsMSGFus] SA_module {i} INPUT:")
-                print(f"  l_xyz[{i}]: shape={l_xyz[i].shape}, mean={l_xyz[i].mean():.6f}")
-                print(f"  l_features[{i}]: shape={l_features[i].shape}, min={l_features[i].min():.6f}, max={l_features[i].max():.6f}, mean={l_features[i].mean():.6f}")
-                if self._debug_pn2_fus_input_count == 0:
-                    print(f"  features (original): shape={features.shape}, min={features.min():.6f}, max={features.max():.6f}, mean={features.mean():.6f}")
-                self._debug_pn2_fus_input_count += 1
-
             li_xyz, li_features, idx = self.SA_modules[i](l_xyz[i], l_features[i], return_idx=True)
-
-            # [DEBUG NPU] Pointnet2ClsMSGFus 每层输出
-            if not hasattr(self, '_debug_pn2_fus_count'):
-                self._debug_pn2_fus_count = 0
-            if self._debug_pn2_fus_count < 1:
-                print(f"[NPU DEBUG Pointnet2ClsMSGFus] SA_module {i} output:")
-                print(f"  li_xyz: shape={li_xyz.shape}, mean={li_xyz.mean():.6f}, std={li_xyz.std():.6f}")
-                print(f"  li_features: shape={li_features.shape}, min={li_features.min():.6f}, max={li_features.max():.6f}, mean={li_features.mean():.6f}, std={li_features.std():.6f}")
-
-                # 检查该模块的 BatchNorm 统计
-                for name, module in self.SA_modules[i].named_modules():
-                    if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d)):
-                        print(f"  BN {name}: running_mean mean={module.running_mean.mean():.6f}, running_var mean={module.running_var.mean():.6f}")
-                self._debug_pn2_fus_count += 1
 
             l_xyz.append(li_xyz)
             l_features.append(li_features)

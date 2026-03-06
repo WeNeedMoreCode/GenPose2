@@ -16,18 +16,6 @@ def _furthest_point_sampling(xyz, npoints):
         dist = torch.sum((xyz - centroid) ** 2, dim=-1)
         distance = torch.min(distance, dist)
         farthest = torch.argmax(distance, dim=-1)
-
-        # [DEBUG] 第一次迭代：打印关键点的距离值
-        if i == 1:
-            print(f"[FPS NPU DEBUG] Iteration 1 (first batch):")
-            print(f"  Selected idx: {farthest[0].item()}")
-            print(f"  Distance at selected idx: {distance[0, farthest[0]].item():.10f}")
-            # 打印距离最大的前5个点和值
-            top5_dist, top5_idx = torch.topk(distance[0], k=5)
-            print(f"  Top 5 distances:")
-            for j in range(5):
-                print(f"    idx={top5_idx[j].item()}, dist={top5_dist[j].item():.10f}")
-
         idx[:, i] = farthest
     return idx.to(torch.int32)
 
@@ -168,31 +156,8 @@ def furthest_point_sampling_wrapper(B, N, m, points_tensor, temp_tensor, idx_ten
     参数：B(批次), N(总点数), m(采样点数), points_tensor(点云BxNx3), temp_tensor(临时张量), idx_tensor(输出索引)
     作用：直接修改idx_tensor的值（与原CUDA算子行为一致）
     """
-    # [NPU DEBUG] Before calling FPS
-    print(f"[FPS NPU Python] B={B}, N={N}, npoint={m}")
-    print(f"[FPS NPU Python] xyz sample first 3 points: {points_tensor[0, :3].tolist()}")
-
-    # [NPU DEBUG] 手动计算点536和点197到点0的距离（与CUDA版本对比）
-    point0 = points_tensor[0, 0, :]
-    point536 = points_tensor[0, 536, :]
-    point197 = points_tensor[0, 197, :]
-    dist_to_536 = torch.sum((point536 - point0) ** 2)
-    dist_to_197 = torch.sum((point197 - point0) ** 2)
-    print(f"[FPS NPU Python] Manual distance check:")
-    print(f"  Point 0: {point0.tolist()}")
-    print(f"  Point 536: {point536.tolist()}, dist to 0: {dist_to_536.item():.10f}")
-    print(f"  Point 197: {point197.tolist()}, dist to 0: {dist_to_197.item():.10f}")
-
-    # 调用纯PyTorch FPS核心逻辑
     idx = _furthest_point_sampling(points_tensor, m)
-
-    # 把结果写入传入的idx_tensor（模拟原CUDA算子的in-place修改）
     idx_tensor.copy_(idx)
-
-    # [NPU DEBUG] After calling FPS
-    print(f"[FPS NPU Python] Result idx (first batch, first 10): {idx_tensor[0, :10].tolist()}")
-    print(f"[FPS NPU Python] Result idx (first batch, last 10): {idx_tensor[0, -10:].tolist()}")
-
     return 1  # 原CUDA版本返回1，保持一致
 
 def gather_points_wrapper(B, C, N, npoints, points_tensor, idx_tensor, out_tensor):
