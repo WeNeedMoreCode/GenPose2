@@ -207,20 +207,6 @@ class Pointnet2ClsMSG(nn.Module):
         for i in range(len(self.SA_modules)):
             li_xyz, li_features = self.SA_modules[i](l_xyz[i], l_features[i])
 
-            # [DEBUG] PointNet2 每层输出
-            if not hasattr(self, '_debug_pn2_count'):
-                self._debug_pn2_count = 0
-            if self._debug_pn2_count < 1:
-                print(f"[CUDA DEBUG PointNet2] SA_module {i} output:")
-                print(f"  li_xyz: shape={li_xyz.shape}, mean={li_xyz.mean():.6f}, std={li_xyz.std():.6f}")
-                print(f"  li_features: shape={li_features.shape}, min={li_features.min():.6f}, max={li_features.max():.6f}, mean={li_features.mean():.6f}, std={li_features.std():.6f}")
-
-                # 检查该模块的 BatchNorm 统计
-                for name, module in self.SA_modules[i].named_modules():
-                    if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d)):
-                        print(f"  BN {name}: running_mean mean={module.running_mean.mean():.6f}, running_var mean={module.running_var.mean():.6f}")
-                self._debug_pn2_count += 1
-
             l_xyz.append(li_xyz)
             l_features.append(li_features)
         return l_features[-1].squeeze(-1)

@@ -15,7 +15,6 @@ from networks.gf_algorithms.sde import init_sde
 from networks.scalenet import ScaleNet
 from configs.config import get_config
 from utils.genpose_utils import encode_axes
-from utils.debug_utils import debug_print, debug_print_batch
 
 
 
@@ -129,9 +128,6 @@ class GFObjectPose(nn.Module):
         else:
             raise NotImplementedError
 
-        # [DEBUG] 点云特征提取后
-        debug_print('pts_feat', 'pts_feat_output', pts_feat, extra_info='[CUDA]')
-
         return pts_feat
     
    
@@ -203,21 +199,9 @@ class GFObjectPose(nn.Module):
         '''
         if mode == 'score':
             out_score = self.pose_score_net(data) # normalisation
-            # [DEBUG] Score网络输出（仅第一次）
-            if not hasattr(self, '_debug_score_count'):
-                self._debug_score_count = 0
-            if self._debug_score_count < 1:
-                debug_print('score_net', 'out_score', out_score, extra_info='[CUDA]')
-                self._debug_score_count += 1
             return out_score
         elif mode == 'energy':
             out_energy = self.pose_score_net(data, return_item='energy')
-            # [DEBUG] Energy网络输出（仅第一次）
-            if not hasattr(self, '_debug_energy_count'):
-                self._debug_energy_count = 0
-            if self._debug_energy_count < 1:
-                debug_print('energy_net', 'out_energy', out_energy)
-                self._debug_energy_count += 1
             return out_energy
         elif mode == 'likelihood':
             likelihoods = self.calc_likelihood(data)

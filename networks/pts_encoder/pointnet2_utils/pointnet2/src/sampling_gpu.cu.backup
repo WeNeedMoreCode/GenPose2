@@ -86,8 +86,11 @@ void gather_points_grad_kernel_launcher_fast(int b, int c, int n, int npoints,
 __device__ void __update(float *__restrict__ dists, int *__restrict__ dists_i, int idx1, int idx2){
     const float v1 = dists[idx1], v2 = dists[idx2];
     const int i1 = dists_i[idx1], i2 = dists_i[idx2];
-    dists[idx1] = v2 > v1 ? v2 : v1;
-    dists_i[idx1] = v2 > v1 ? i2 : i1;
+    if (v2 > v1 || (v2 == v1 && i2 < i1)) {
+        dists[idx1] = v2;
+        dists_i[idx1] = i2;
+    }
+    // 否则保留原值
 }
 
 template <unsigned int block_size>
