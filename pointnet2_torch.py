@@ -51,19 +51,48 @@ def _gather_points_grad(grad_out, idx, N):
     return grad_points
 
 def _ball_query(new_xyz, xyz, radius, nsample):
-    """纯PyTorch实现球形邻域查询核心逻辑"""
+    """纯PyTorch实现球形邻域查询核心逻辑 - 对齐CUDA版本（向量化优化）
+
+    CUDA版本逻辑：
+    1. 按索引顺序遍历点（k=0,1,2,...）
+    2. 找到第一个在半径内的点时，用这个点填充整个nsample
+    3. 继续逐个填充找到的点
+    4. 如果找到超过nsample个点，只取前nsample个
+    """
     B, N, _ = xyz.shape
     M = new_xyz.shape[1]
-    dists = torch.cdist(new_xyz, xyz, p=2)
     radius2 = radius * radius
+
+    # 向量化计算所有距离：(B, M, N)
+    dists = torch.cdist(new_xyz, xyz, p=2) ** 2
+
+    # 创建半径内掩码：(B, M, N)
     mask = dists < radius2
-    idx = torch.arange(N, device=xyz.device).unsqueeze(0).unsqueeze(0).repeat(B, M, 1)
-    idx = torch.where(mask, idx, torch.zeros_like(idx))
-    dists_sorted, idx_sorted = torch.sort(dists, dim=-1)
-    idx = torch.gather(idx, dim=-1, index=idx_sorted)
-    idx = idx[:, :, :nsample]
-    mask_empty = (dists_sorted[:, :, :nsample] >= radius2).all(dim=-1, keepdim=True)
-    idx = torch.where(mask_empty, idx[:, :, 0:1].repeat(1, 1, nsample), idx)
+
+    # 创建索引张量：(N,) -> (B, M, N)
+    indices = torch.arange(N, device=xyz.device).unsqueeze(0).unsqueeze(1).expand(B, M, -1)
+
+    # 初始化输出张量
+    idx = torch.zeros((B, M, nsample), dtype=torch.int32, device=xyz.device)
+
+    # 按CUDA逻辑：对每个中心点按索引顺序选择
+    for b in range(B):
+        for m in range(M):
+            # 获取在半径内的点索引，并按原始索引顺序排序
+            valid_indices = indices[b, m][mask[b, m]]  # 可变长度
+
+            if len(valid_indices) == 0:
+                # 没有找到任何点，保持全0
+                continue
+            elif len(valid_indices) < nsample:
+                # 找到的点不足nsample，用第一个点填充剩余位置（对齐CUDA逻辑）
+                first_idx = valid_indices[0]
+                idx[b, m, :len(valid_indices)] = valid_indices
+                idx[b, m, len(valid_indices):] = first_idx
+            else:
+                # 找到的点足够，按索引顺序取前nsample个
+                idx[b, m, :] = valid_indices[:nsample]
+
     return idx.to(torch.int32)
 
 def _group_points(points, idx):
@@ -82,6 +111,26 @@ def _group_points_grad(grad_out, idx, N):
     grad_points = torch.zeros((B, C, N), device=grad_out.device, dtype=grad_out.dtype)
     grad_points.scatter_add_(dim=-1, index=idx, src=grad_out)
     return grad_points
+
+
+def group_points_wrapper(B, c, n, npoints, nsample, points_tensor, idx_tensor, out_tensor):
+    """与原CUDA版本接口完全一致的点分组wrapper"""
+    out = _group_points(points_tensor, idx_tensor)
+    out_tensor.copy_(out)
+    return 1
+
+# 兼容原group_points_wrapper_fast
+group_points_wrapper_fast = group_points_wrapper
+
+def group_points_grad_wrapper(B, c, n, npoints, nsample, grad_out_tensor, idx_tensor, grad_points_tensor):
+    """与原CUDA版本接口完全一致的点分组反向wrapper"""
+    grad_points = _group_points_grad(grad_out_tensor, idx_tensor, n)
+    grad_points_tensor.copy_(grad_points)
+    return 1
+
+# 兼容原group_points_grad_wrapper_fast
+group_points_grad_wrapper_fast = group_points_grad_wrapper
+
 
 def _three_nn(unknown, known):
     """纯PyTorch实现三邻域查询核心逻辑"""
@@ -167,23 +216,7 @@ def ball_query_wrapper(B, n, m, radius, nsample, new_xyz_tensor, xyz_tensor, idx
 # 兼容原ball_query_wrapper_fast（避免调用别名遗漏）
 ball_query_wrapper_fast = ball_query_wrapper
 
-def group_points_wrapper(B, c, n, npoints, nsample, points_tensor, idx_tensor, out_tensor):
-    """与原CUDA版本接口完全一致的点分组wrapper"""
-    out = _group_points(points_tensor, idx_tensor)
-    out_tensor.copy_(out)
-    return 1
 
-# 兼容原group_points_wrapper_fast
-group_points_wrapper_fast = group_points_wrapper
-
-def group_points_grad_wrapper(B, c, n, npoints, nsample, grad_out_tensor, idx_tensor, grad_points_tensor):
-    """与原CUDA版本接口完全一致的点分组反向wrapper"""
-    grad_points = _group_points_grad(grad_out_tensor, idx_tensor, n)
-    grad_points_tensor.copy_(grad_points)
-    return 1
-
-# 兼容原group_points_grad_wrapper_fast
-group_points_grad_wrapper_fast = group_points_grad_wrapper
 
 def three_nn_wrapper(B, n, m, unknown_tensor, known_tensor, dist2_tensor, idx_tensor):
     """与原CUDA版本接口完全一致的三邻域查询wrapper"""

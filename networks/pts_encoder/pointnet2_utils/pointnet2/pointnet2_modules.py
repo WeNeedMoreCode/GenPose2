@@ -79,8 +79,8 @@ class _PointnetSAModuleBase(nn.Module):
                     print(f"[NPU DEBUG SA_Base] Before max_pool2d: shape={new_features.shape}, is_contiguous={new_features.is_contiguous()}, min={new_features.min():.6f}, max={new_features.max():.6f}")
 
                 new_features = F.max_pool2d(
-                    new_features, kernel_size=[1, new_features.size(3)]
-                )  # (B, mlp[-1], npoint, 1)
+                    new_features.to('cpu'), kernel_size=[1, new_features.size(3)]
+                ).to(new_features.device)  # (B, mlp[-1], npoint, 1)
 
                 # [DEBUG NPU] max_pool2d 后检查
                 if hasattr(self, '_debug_sa_base_count') and self._debug_sa_base_count < 1:
