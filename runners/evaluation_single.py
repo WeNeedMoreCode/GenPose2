@@ -34,6 +34,10 @@ from utils.visualize import create_grid_image
 from cutoop.eval_utils import DetectMatch, Metrics
 from configs.config import get_config
 
+
+
+
+
 ''' load config '''
 cfg = get_config()
 cfg.load_per_object = True
@@ -42,6 +46,34 @@ torch.manual_seed(cfg.seed)
 torch.cuda.manual_seed(cfg.seed)
 random.seed(cfg.seed)
 np.random.seed(cfg.seed)
+
+
+def apply_patches():
+    def patched_blilinear2d(input, output_size, align_corners,scale_factors):
+        original_device = input.device
+        input_cpu = input.cpu()
+
+        result_tmp = _original_blilinear2d(
+            input_cpu,
+            output_size,
+            align_corners, 
+            scale_factors,
+        )
+        result = result_tmp.to(device=original_device)
+        return result
+
+    def patched_max_pool2d(input, kernel_size):
+        original_device = input.device
+        input_cpu = input.cpu()
+        result_tmp = _original_max_pool2d(input_cpu, kernel_size)
+        result = result_tmp.to(device=original_device)
+        return result
+    
+    _original_blilinear2d = torch._C._nn.upsample_bilinear2d
+    _original_max_pool2d = F.max_pool2d
+
+    torch._C._nn.upsample_bilinear2d = patched_blilinear2d
+    F.max_pool2d = patched_max_pool2d
 
 def get_dataloader():
     dataset = Omni6DPoseDataSet(
@@ -337,7 +369,7 @@ def visualize_pose_distribution(score_path, dm_path):
             all_dm.draw_image(index=index)
             set_trace()
 
-
+apply_patches()
 os.makedirs(f'results/evaluation_results/{cfg.result_dir}', exist_ok=True)
 
 score_model_name = '_'.join(cfg.pretrained_score_model_path.split('/')[-2:])
