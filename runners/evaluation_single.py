@@ -34,11 +34,9 @@ from utils.visualize import create_grid_image
 from cutoop.eval_utils import DetectMatch, Metrics
 from configs.config import get_config
 
-
 ''' load config '''
 cfg = get_config()
 cfg.load_per_object = True
-cfg.device='npu:0'
 
 torch.manual_seed(cfg.seed)
 torch.cuda.manual_seed(cfg.seed)
@@ -84,20 +82,19 @@ def inference_score(save_path):
 
     for i, test_batch in enumerate(tqdm(dataloader, desc="score sampling")):
         batch_sample = process_batch(
-            batch_sample = test_batch,
-            device=cfg.device,
+            batch_sample = test_batch, 
+            device=cfg.device, 
             pose_mode=cfg.pose_mode,
         )
 
         pred_results = score_agent.pred_func(
             data=batch_sample,
-            repeat_num=cfg.eval_repeat_num,
-            T0=cfg.T0,
+            repeat_num=cfg.eval_repeat_num, 
+            T0=cfg.T0, 
             return_average_res=False,
             return_process=False
         )
         pred_pose, _ = pred_results
-
         all_pred_pose.append(pred_pose)
         all_score_feature.append({
             'pts_feat': batch_sample['pts_feat'].cpu(),
@@ -340,10 +337,6 @@ def visualize_pose_distribution(score_path, dm_path):
             all_dm.draw_image(index=index)
             set_trace()
 
-# [NPU] Fix random seed before data loading (must be before makedirs)
-random.seed(42)
-np.random.seed(42)
-torch.manual_seed(42)
 
 os.makedirs(f'results/evaluation_results/{cfg.result_dir}', exist_ok=True)
 

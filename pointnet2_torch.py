@@ -1,8 +1,7 @@
 import torch
 
-# -------------------------- 工具函数（内部使用，不对外暴露） --------------------------
 def _furthest_point_sampling(xyz, npoints):
-    """纯PyTorch实现FPS核心逻辑"""
+    """Implemetation of PyTorch Furthest Point Sampling (FPS) algorithm."""
     B, N, _ = xyz.shape
     device = xyz.device
     idx = torch.zeros((B, npoints), dtype=torch.int64, device=device)
@@ -20,7 +19,6 @@ def _furthest_point_sampling(xyz, npoints):
     return idx.to(torch.int32)
 
 def _gather_points(features, idx):
-    """纯PyTorch实现Gather核心逻辑"""
     B, C, N = features.shape
     M = idx.shape[1]
     idx = idx.unsqueeze(1).expand(-1, C, -1)
@@ -28,72 +26,46 @@ def _gather_points(features, idx):
     return output
 
 def _gather_points_grad(grad_out, idx, N):
-    """纯PyTorch实现Gather反向梯度"""
     B, C, M = grad_out.shape
-    # 创建梯度容器 (B, C, N)
     grad_points = torch.zeros((B, C, N), device=grad_out.device, dtype=grad_out.dtype)
-    # 将索引扩展到所有通道 (B, M) -> (B, C, M)
     idx_expanded = idx.unsqueeze(1).expand(-1, C, -1)
-    # 使用 scatter_add_ 累加梯度（关键：同一个点可能被多次采样，需要累加）
     grad_points.scatter_add_(dim=-1, index=idx_expanded, src=grad_out)
     return grad_points
 
 def _ball_query(new_xyz, xyz, radius, nsample):
-    """纯PyTorch实现球形邻域查询核心逻辑 - 对齐CUDA版本（向量化优化）
-
-    CUDA版本逻辑：
-    1. 按索引顺序遍历点（k=0,1,2,...）
-    2. 找到第一个在半径内的点时，用这个点填充整个nsample
-    3. 继续逐个填充找到的点
-    4. 如果找到超过nsample个点，只取前nsample个
-    """
     B, N, _ = xyz.shape
     M = new_xyz.shape[1]
     radius2 = radius * radius
 
-    # 向量化计算所有距离：(B, M, N)
     dists = torch.cdist(new_xyz, xyz, p=2) ** 2
-
-    # 创建半径内掩码：(B, M, N)
     mask = dists < radius2
-
-    # 创建索引张量：(N,) -> (B, M, N)
     indices = torch.arange(N, device=xyz.device).unsqueeze(0).unsqueeze(1).expand(B, M, -1)
-
-    # 初始化输出张量
     idx = torch.zeros((B, M, nsample), dtype=torch.int32, device=xyz.device)
 
-    # 按CUDA逻辑：对每个中心点按索引顺序选择
     for b in range(B):
         for m in range(M):
-            # 获取在半径内的点索引，并按原始索引顺序排序
-            valid_indices = indices[b, m][mask[b, m]]  # 可变长度
+            valid_indices = indices[b, m][mask[b, m]]  
 
             if len(valid_indices) == 0:
-                # 没有找到任何点，保持全0
                 continue
             elif len(valid_indices) < nsample:
-                # 找到的点不足nsample，用第一个点填充剩余位置（对齐CUDA逻辑）
                 first_idx = valid_indices[0]
                 idx[b, m, :len(valid_indices)] = valid_indices
                 idx[b, m, len(valid_indices):] = first_idx
             else:
-                # 找到的点足够，按索引顺序取前nsample个
                 idx[b, m, :] = valid_indices[:nsample]
 
     return idx.to(torch.int32)
 
 def _group_points(points, idx):
-    """纯PyTorch实现点特征分组核心逻辑"""
     B, C, N = points.shape
-    M, nsample = idx.shape[1], idx.shape[2]
+    M, _ = idx.shape[1], idx.shape[2]
     idx = idx.unsqueeze(1).expand(-1, C, -1, -1)
     points = points.unsqueeze(2).expand(-1, -1, M, -1)
     out = torch.gather(points, dim=-1, index=idx)
     return out
 
 def _group_points_grad(grad_out, idx, N):
-    """纯PyTorch实现group_points反向梯度"""
     B, C, M, nsample = grad_out.shape
     idx = idx.unsqueeze(1).expand(-1, C, -1, -1)
     grad_points = torch.zeros((B, C, N), device=grad_out.device, dtype=grad_out.dtype)
@@ -139,8 +111,7 @@ def _three_interpolate(points, idx, weight):
     return out
 
 def _three_interpolate_grad(grad_out, idx, weight, M):
-    """纯PyTorch实现三邻域插值反向梯度"""
-    B, C, N = grad_out.shape
+    B, C, _ = grad_out.shape
     grad_out = grad_out.unsqueeze(-1)
     weight = weight.unsqueeze(1).expand(-1, C, -1, -1)
     grad_neighbor = grad_out * weight
@@ -149,61 +120,45 @@ def _three_interpolate_grad(grad_out, idx, weight, M):
     grad_points.scatter_add_(dim=-1, index=idx, src=grad_neighbor)
     return grad_points
 
-# -------------------------- 对外暴露：与原pointnet2_cuda完全一致的wrapper接口 --------------------------
 def furthest_point_sampling_wrapper(B, N, m, points_tensor, temp_tensor, idx_tensor):
-    """
-    与原CUDA版本接口完全一致的FPS wrapper
-    参数：B(批次), N(总点数), m(采样点数), points_tensor(点云BxNx3), temp_tensor(临时张量), idx_tensor(输出索引)
-    作用：直接修改idx_tensor的值（与原CUDA算子行为一致）
-    """
     idx = _furthest_point_sampling(points_tensor, m)
     idx_tensor.copy_(idx)
-    return 1  # 原CUDA版本返回1，保持一致
+    return 1
 
 def gather_points_wrapper(B, C, N, npoints, points_tensor, idx_tensor, out_tensor):
-    """与原CUDA版本接口完全一致的Gather wrapper"""
     out = _gather_points(points_tensor, idx_tensor)
     out_tensor.copy_(out)
     return 1
 
 def gather_points_grad_wrapper(B, C, N, npoints, grad_out_tensor, idx_tensor, grad_points_tensor):
-    """与原CUDA版本接口完全一致的Gather反向wrapper"""
     grad_points = _gather_points_grad(grad_out_tensor, idx_tensor, N)
     grad_points_tensor.copy_(grad_points)
     return 1
 
 def ball_query_wrapper(B, n, m, radius, nsample, new_xyz_tensor, xyz_tensor, idx_tensor):
-    """与原CUDA版本接口完全一致的球形邻域查询wrapper"""
     idx = _ball_query(new_xyz_tensor, xyz_tensor, radius, nsample)
     idx_tensor.copy_(idx)
     return 1
 
-# 兼容原ball_query_wrapper_fast（避免调用别名遗漏）
 ball_query_wrapper_fast = ball_query_wrapper
 
 
 
 def three_nn_wrapper(B, n, m, unknown_tensor, known_tensor, dist2_tensor, idx_tensor):
-    """与原CUDA版本接口完全一致的三邻域查询wrapper"""
     dist2, idx = _three_nn(unknown_tensor, known_tensor)
     dist2_tensor.copy_(dist2)
     idx_tensor.copy_(idx)
 
-# 兼容原three_nn_wrapper_fast
 three_nn_wrapper_fast = three_nn_wrapper
 
 def three_interpolate_wrapper(B, c, m, n, points_tensor, idx_tensor, weight_tensor, out_tensor):
-    """与原CUDA版本接口完全一致的三邻域插值wrapper"""
     out = _three_interpolate(points_tensor, idx_tensor, weight_tensor)
     out_tensor.copy_(out)
 
-# 兼容原three_interpolate_wrapper_fast
 three_interpolate_wrapper_fast = three_interpolate_wrapper
 
 def three_interpolate_grad_wrapper(B, c, n, m, grad_out_tensor, idx_tensor, weight_tensor, grad_points_tensor):
-    """与原CUDA版本接口完全一致的三邻域插值反向wrapper"""
     grad_points = _three_interpolate_grad(grad_out_tensor, idx_tensor, weight_tensor, m)
     grad_points_tensor.copy_(grad_points)
 
-# 兼容原three_interpolate_grad_wrapper_fast
 three_interpolate_grad_wrapper_fast = three_interpolate_grad_wrapper
