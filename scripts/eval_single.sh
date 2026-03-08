@@ -15,4 +15,4 @@ CUDA_VISIBLE_DEVICES=0 python runners/evaluation_single.py \
 --dino pointwise \
 --num_worker 32 \
 --real_drop 3 \
---device npu:0
+--device cuda:0

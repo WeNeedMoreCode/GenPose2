@@ -57,10 +57,10 @@ def get_dataloader():
         dataset,
         batch_size=cfg.batch_size,
         shuffle=False,
-        num_workers=0,
-        persistent_workers=False,
+        num_workers=cfg.num_workers,
+        persistent_workers=True,
         drop_last=False,
-        pin_memory=False,
+        pin_memory=True,
     )
     return dataloader
 
@@ -336,10 +336,6 @@ def visualize_pose_distribution(score_path, dm_path):
             all_dm.draw_image(index=index)
             set_trace()
 
-# Fix random seed before data loading (must be before makedirs)
-random.seed(42)
-np.random.seed(42)
-torch.manual_seed(42)
 
 os.makedirs(f'results/evaluation_results/{cfg.result_dir}', exist_ok=True)
 
