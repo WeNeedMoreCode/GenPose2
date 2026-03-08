@@ -155,7 +155,7 @@ class InferDataset(object):
 
         for key, value in objects.items():
             objects[key] = torch.stack(value, dim=0)
-
+            
         PC_da = objects['pcl_in'].to(self._device)
         data = {}
         data['pts'] = PC_da                         # [bs, 1024, 3]
@@ -176,7 +176,7 @@ class InferDataset(object):
         data['pts_center'] = zero_mean
 
         return data
-
+    
 
     @property
     def color(self):
@@ -189,7 +189,7 @@ class InferDataset(object):
     @property
     def depth(self):
         return self._depth
-
+    
     @depth.setter
     def depth(self, depth):
         self._depth = depth
@@ -197,7 +197,7 @@ class InferDataset(object):
     @property
     def mask(self):
         return self._mask
-
+    
     @mask.setter
     def mask(self, mask):
         self._mask = mask
@@ -205,7 +205,7 @@ class InferDataset(object):
     @property
     def cam_intrinsics(self):
         return self._meta.camera.intrinsics
-
+    
     @cam_intrinsics.setter
     def cam_intrinsics(self, intrinsics):
         self._meta.camera.intrinsics = intrinsics
