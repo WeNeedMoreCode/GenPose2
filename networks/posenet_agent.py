@@ -170,7 +170,7 @@ class PoseNet(nn.Module):
             raise ValueError("Checkpoint {} not exists.".format(load_path))
 
         # checkpoint = torch.load(load_path)
-        checkpoint = torch.load(load_path, map_location=torch.device('npu:0'))
+        checkpoint = torch.load(load_path, map_location=self.cfg.device)
         print("Loading checkpoint from {} ...".format(load_path))
         
         if isinstance(self.net, nn.DataParallel):
@@ -455,7 +455,7 @@ class PoseNet(nn.Module):
 
         self.is_testing = True
         self.net.eval()
-
+        
         with torch.no_grad():
             data['pts_feat'] = self.net(data, mode='pts_feature')
             data['rgb_feat'] = self.net(data, mode='rgb_feature')
@@ -477,7 +477,6 @@ class PoseNet(nn.Module):
             
             ''' Inference '''
             in_process_sample, res = self.net(repeated_data, mode=f'{self.cfg.sampler_mode[0]}_sample', init_x=repeated_init_x, T0=T0)
-
             pred_pose = res.reshape(bs, repeat_num, -1)
             in_process_sample = in_process_sample.reshape(bs, repeat_num, in_process_sample.shape[1], -1)
             

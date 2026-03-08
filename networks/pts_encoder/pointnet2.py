@@ -261,14 +261,12 @@ class Pointnet2ClsMSGFus(nn.Module):
         for i in range(len(self.SA_modules)):
             if i != 0:
                 l_features[i] = torch.concatenate([l_features[i], features], dim=1) # concatenate
-
             li_xyz, li_features, idx = self.SA_modules[i](l_xyz[i], l_features[i], return_idx=True)
-
             l_xyz.append(li_xyz)
             l_features.append(li_features)
             if idx != None:
                 features = torch.gather(
-                    features, 2,
+                    features, 2, 
                     torch.unsqueeze(idx.type(torch.int64), 1).expand(-1, features.shape[1], -1)
                 ) # only keep features of remaining points
             else:

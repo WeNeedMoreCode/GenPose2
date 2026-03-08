@@ -59,10 +59,10 @@ def get_dataloader():
         dataset,
         batch_size=cfg.batch_size,
         shuffle=False,
-        num_workers=0,
-        persistent_workers=False,
+        num_workers=cfg.num_workers,
+        persistent_workers=True,
         drop_last=False,
-        pin_memory=False,
+        pin_memory=True,
     )
     return dataloader
 

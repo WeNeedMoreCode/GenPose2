@@ -5,7 +5,6 @@ import torch.nn as nn
 from typing import Tuple
 import sys
 
-# import pointnet2_cuda as pointnet2
 import pointnet2_torch as pointnet2
 
 
@@ -132,7 +131,7 @@ class ThreeInterpolate(Function):
         n = idx.size(1)
         device = features.device
         ctx.three_interpolate_for_backward = (idx, weight, m)
-        output = torch.empty((B, c, n), dtype=torch.float32, device=features)
+        output = torch.empty((B, c, n), dtype=torch.float32, device=device)
 
         pointnet2.three_interpolate_wrapper(B, c, m, n, features, idx, weight, output)
         return output
