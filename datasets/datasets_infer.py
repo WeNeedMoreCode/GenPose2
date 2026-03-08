@@ -2,7 +2,6 @@ import numpy as np
 import cv2
 import torch
 import copy
-# import open3d as o3d  # NPU不支持，已注释
 
 from cutoop.data_loader import Dataset, ImageMetaData
 from utils.datasets_utils import aug_bbox_eval, get_2d_coord_np, crop_resize_by_warp_affine
@@ -47,7 +46,7 @@ class InferDataset(object):
         self._device = device
         self._n_pts = n_pts
 
-
+    
     @classmethod
     def alternetive_init(cls, prefix: str, img_size: int=224, device='cuda', n_pts=1024):
         prefix = prefix
@@ -68,11 +67,11 @@ class InferDataset(object):
             assert False, "depth, mask, and rgb should have the same shape"
         intrinsics = self._meta.camera.intrinsics
         intrinsic_matrix = np.array([
-            [intrinsics.fx, 0,             intrinsics.cx],
-            [0,             intrinsics.fy, intrinsics.cy],
+            [intrinsics.fx, 0,             intrinsics.cx], 
+            [0,             intrinsics.fy, intrinsics.cy], 
             [0,             0,             0]
             ], dtype=np.float32)
-
+        
         img_width, img_height = self._color.shape[1], self._color.shape[0]
         scale_x = img_width / intrinsics.width
         scale_y = img_height / intrinsics.height
@@ -141,7 +140,7 @@ class InferDataset(object):
         data['roi_center_dir'] = torch.tensor(pixel2xyz(img_height, img_height, bbox_center, intrinsics), dtype=torch.float32).contiguous()
 
         return data
-
+    
 
     def get_objects(self):
         obj_idx = np.unique(self._mask)
@@ -152,7 +151,7 @@ class InferDataset(object):
             for key, value in obj.items():
                 if key not in objects:
                     objects[key] = []
-                objects[key].append(value)
+                objects[key].append(value)        
 
         for key, value in objects.items():
             objects[key] = torch.stack(value, dim=0)
@@ -210,3 +209,4 @@ class InferDataset(object):
     @cam_intrinsics.setter
     def cam_intrinsics(self, intrinsics):
         self._meta.camera.intrinsics = intrinsics
+

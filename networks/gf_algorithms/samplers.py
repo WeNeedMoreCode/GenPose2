@@ -219,13 +219,11 @@ def cond_ode_sampler(
     
     num_steps = xs.shape[0]
     xs = xs.reshape(batch_size*num_steps, -1)
-    # xs = xs.to(torch.float16)  # 注释掉float16，NPU上精度问题导致姿态估计失败
     xs[:, :-3] = normalize_rotation(xs[:, :-3], pose_mode)
     xs = xs.reshape(num_steps, batch_size, -1)
     xs[:, :, -3:] += data['pts_center'].unsqueeze(0).repeat(xs.shape[0], 1, 1)
     x[:, :-3] = normalize_rotation(x[:, :-3], pose_mode)
     x[:, -3:] += data['pts_center']
-
     return xs.permute(1, 0, 2), x
 
 
