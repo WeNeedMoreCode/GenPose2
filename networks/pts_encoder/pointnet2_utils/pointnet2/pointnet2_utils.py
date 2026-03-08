@@ -24,29 +24,10 @@ class FurthestPointSampling(Function):
 
         B, N, _ = xyz.size()
 
-        # [CUDA DEBUG] Before calling CUDA kernel
-        print(f"[FPS CUDA Python] B={B}, N={N}, npoint={npoint}")
-        print(f"[FPS CUDA Python] xyz sample first 3 points: {xyz[0, :3].tolist()}")
-
-        # [CUDA DEBUG] 手动计算点536和点197到点0的距离
-        point0 = xyz[0, 0, :]  # 第一个点
-        point536 = xyz[0, 536, :]
-        point197 = xyz[0, 197, :]
-        dist_to_536 = torch.sum((point536 - point0) ** 2)
-        dist_to_197 = torch.sum((point197 - point0) ** 2)
-        print(f"[FPS CUDA Python] Manual distance check:")
-        print(f"  Point 0: {point0.tolist()}")
-        print(f"  Point 536: {point536.tolist()}, dist to 0: {dist_to_536.item():.10f}")
-        print(f"  Point 197: {point197.tolist()}, dist to 0: {dist_to_197.item():.10f}")
-
         output = torch.cuda.IntTensor(B, npoint)
         temp = torch.cuda.FloatTensor(B, N).fill_(1e10)
 
         pointnet2.furthest_point_sampling_wrapper(B, N, npoint, xyz, temp, output)
-
-        # [CUDA DEBUG] After calling CUDA kernel
-        print(f"[FPS CUDA Python] Result idx (first batch, first 10): {output[0, :10].tolist()}")
-        print(f"[FPS CUDA Python] Result idx (first batch, last 10): {output[0, -10:].tolist()}")
 
         return output
 
