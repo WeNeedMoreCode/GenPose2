@@ -47,8 +47,8 @@ class _PointnetSAModuleBase(nn.Module):
 
             if self.pool_method == 'max_pool':
                 new_features = F.max_pool2d(
-                    new_features.to('cpu'), kernel_size=[1, new_features.size(3)]
-                ).to(new_features.device)  # (B, mlp[-1], npoint, 1)
+                    new_features, kernel_size=[1, new_features.size(3)]
+                )  # (B, mlp[-1], npoint, 1)
             elif self.pool_method == 'avg_pool':
                 new_features = F.avg_pool2d(
                     new_features, kernel_size=[1, new_features.size(3)]

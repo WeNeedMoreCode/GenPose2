@@ -1,10 +1,14 @@
+torch==2.1.0
+torch_npu==2.1.0
+torchvision==0.16.0
+torchaudio==2.1.0
 opencv-python==4.9.0.80
 scipy==1.12.0
 numpy==1.26.3
 tensorboardX==2.6.2.2
 tensorboard==2.17.0
-# open3d==0.18.0  # NPU不支持，已注释
-pyrealsense2==2.55.1.6486
 matplotlib
 tqdm
 scikit-learn
+# open3d==0.18.0 # If use camera, need to install open3d.
+# pyrealsense2==2.56.5.9235 # If use camera, need to install pyrealsense2.

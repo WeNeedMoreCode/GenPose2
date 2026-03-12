@@ -74,33 +74,27 @@ def _group_points_grad(grad_out, idx, N):
 
 
 def group_points_wrapper(B, c, n, npoints, nsample, points_tensor, idx_tensor, out_tensor):
-    """与原CUDA版本接口完全一致的点分组wrapper"""
     out = _group_points(points_tensor, idx_tensor)
     out_tensor.copy_(out)
     return 1
 
-# 兼容原group_points_wrapper_fast
 group_points_wrapper_fast = group_points_wrapper
 
 def group_points_grad_wrapper(B, c, n, npoints, nsample, grad_out_tensor, idx_tensor, grad_points_tensor):
-    """与原CUDA版本接口完全一致的点分组反向wrapper"""
     grad_points = _group_points_grad(grad_out_tensor, idx_tensor, n)
     grad_points_tensor.copy_(grad_points)
     return 1
 
-# 兼容原group_points_grad_wrapper_fast
 group_points_grad_wrapper_fast = group_points_grad_wrapper
 
 
 def _three_nn(unknown, known):
-    """纯PyTorch实现三邻域查询核心逻辑"""
     dist = torch.cdist(unknown, known, p=2)
     dist2, idx = torch.topk(dist, k=3, dim=-1, largest=False)
     dist2 = dist2 ** 2
     return dist2, idx.to(torch.int32)
 
 def _three_interpolate(points, idx, weight):
-    """纯PyTorch实现三邻域插值核心逻辑"""
     B, C, M = points.shape
     N = idx.shape[1]
     idx = idx.unsqueeze(1).expand(-1, C, -1, -1)

@@ -400,5 +400,3 @@ get_criterion(dm_save_path, criterion_save_path)
 
 metrics_save_path = f'results/evaluation_results/{cfg.result_dir}/metrics.json'
 print_metrics(dm_save_path, criterion_save_path, metrics_save_path)
-# visualize_pose_distribution(score_save_path, dm_save_path)
-os._exit(0)
