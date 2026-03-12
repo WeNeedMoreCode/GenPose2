@@ -169,7 +169,6 @@ class PoseNet(nn.Module):
         if not os.path.exists(load_path):
             raise ValueError("Checkpoint {} not exists.".format(load_path))
 
-        # checkpoint = torch.load(load_path)
         checkpoint = torch.load(load_path, map_location=self.cfg.device)
         print("Loading checkpoint from {} ...".format(load_path))
         

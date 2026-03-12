@@ -35,9 +35,6 @@ from cutoop.eval_utils import DetectMatch, Metrics
 from configs.config import get_config
 
 
-
-
-
 ''' load config '''
 cfg = get_config()
 cfg.load_per_object = True
@@ -118,11 +115,10 @@ def inference_score(save_path):
             device=cfg.device, 
             pose_mode=cfg.pose_mode,
         )
-
         pred_results = score_agent.pred_func(
-            data=batch_sample,
+            data=batch_sample, 
             repeat_num=cfg.eval_repeat_num, 
-            T0=cfg.T0, 
+            T0=cfg.T0,
             return_average_res=False,
             return_process=False
         )

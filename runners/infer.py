@@ -1,7 +1,7 @@
 import os
 import sys
 
-# 禁用OpenCV GUI，适用于无图形界面环境
+# Disable OpenCV GUI for headless environments
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 import numpy as np
 from tqdm import tqdm
@@ -12,8 +12,8 @@ torch_npu.npu.set_compile_mode(jit_compile=False)
 import random
 import gc
 import cv2
-# import open3d as o3d  # NPU不支持，已注释
-# import pyrealsense2 as rs  # 离线推理不需要，已注释
+# import open3d as o3d  # Not needed for offline inference
+# import pyrealsense2 as rs  # Not needed for offline inference
 import numpy as np
 import glob
 
@@ -248,12 +248,12 @@ def visualize_pose(data:InferDataset, all_final_pose, all_final_length, visualiz
 
     for index, (obj_pose, obj_length) in enumerate(zip(all_final_pose, all_final_length)):
         if visualize_pts:
-            # open3d 可视化已禁用（NPU不支持）
+            # open3d Not needed for offline inference
             # pts = data.get_objects()['pts'].cpu().numpy()[index]
             # pcd = o3d.geometry.PointCloud()
             # pcd.points = o3d.utility.Vector3dVector(pts)
             # o3d.visualization.draw_geometries([pcd])
-            print(f"Object {index}: visualize_pts is not supported (open3d disabled)")
+            # print(f"Object {index}: visualize_pts is not supported (open3d disabled)")
         color_img = DetectMatch._draw_image(
             vis_img=color_img,
             pred_affine=obj_pose,
@@ -270,7 +270,7 @@ def visualize_pose(data:InferDataset, all_final_pose, all_final_length, visualiz
             thickness=True,
         )
     
-    # 在无图形界面环境下禁用窗口显示
+    # Not needed for offline inference
     # if visualize_image:
     #     cv2.namedWindow('rgb')
     #     cv2.imshow('rgb', color_img)
@@ -304,17 +304,17 @@ def main():
         scale_model_path=SCALE_MODEL_PATH,
     )
     
-    # cv2.namedWindow('rgb')  # 无图形界面，已禁用
+    # cv2.namedWindow('rgb')  # Not needed for offline inference
     for index, color_image in enumerate(tqdm(color_images)):
         data_prefix = color_image.replace('color.png', '')
         data = InferDataset.alternetive_init(data_prefix, img_size=GenPose2.cfg.img_size, device=GenPose2.cfg.device, n_pts=GenPose2.cfg.num_points)
         pose, length = GenPose2.inference(data, PREV_POSE, TRACKING, TRACKING_T0)
         color_image_w_pose = visualize_pose(data, pose, length, visualize_image=False)
         PREV_POSE = pose
-        # cv2.imshow('rgb', color_image_w_pose)  # 无图形界面，已禁用
+        # cv2.imshow('rgb', color_image_w_pose)  # Not needed for offline inference
         # cv2.waitKey(1)
 
-    # cv2.destroyAllWindows()  # 无图形界面，已禁用    
+    # cv2.destroyAllWindows()  # Not needed for offline inference    
 
 
 if __name__ == '__main__':
