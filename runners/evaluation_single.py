@@ -44,6 +44,20 @@ torch.cuda.manual_seed(cfg.seed)
 random.seed(cfg.seed)
 np.random.seed(cfg.seed)
 
+# Performance statistics
+perf_stats = {
+    'score_time': [],
+    'score_samples': 0,
+    'energy_time': [],
+    'energy_samples': 0,
+    'aggregate_time': [],
+    'aggregate_samples': 0,
+    'scale_time': [],
+    'scale_samples': 0,
+    'bbox_time': [],
+    'bbox_samples': 0,
+}
+
 
 def apply_spec_ops_patches():
     def patched_bilinear2d(input, output_size, align_corners,scale_factors):
@@ -108,8 +122,11 @@ def inference_score(save_path):
 
     all_pred_pose = []
     all_score_feature = []
+    total_samples = 0
 
     for i, test_batch in enumerate(tqdm(dataloader, desc="score sampling")):
+        torch.npu.synchronize()
+        start_time = time.time()
         batch_sample = process_batch(
             batch_sample = test_batch, 
             device=cfg.device, 
@@ -128,9 +145,14 @@ def inference_score(save_path):
             'pts_feat': batch_sample['pts_feat'].cpu(),
             'rgb_feat': (None if batch_sample['rgb_feat'] is None else batch_sample['rgb_feat'].cpu()),
         })
+        torch.npu.synchronize()
+        elapsed = time.time() - start_time
+        perf_stats['score_time'].append(elapsed)
+        total_samples += pred_pose.shape[0]
+        perf_stats['score_samples'] = total_samples
+
         if i % 4 == 3:
             gc.collect()
-    
     pickle.dump((all_pred_pose, all_score_feature), open(save_path, 'wb'))
 
 def inference_energy(score_path, save_path):
@@ -145,8 +167,12 @@ def inference_energy(score_path, save_path):
     energy_agent.eval()
 
     all_pred_energy = []
+    total_samples = 0
 
     for i, test_batch in enumerate(tqdm(dataloader, desc="energy")):
+        torch.npu.synchronize()
+        start_time = time.time()
+
         batch_sample = process_batch(
             batch_sample = test_batch, 
             device=cfg.device, 
@@ -160,9 +186,16 @@ def inference_energy(score_path, save_path):
             extract_feature=True
         )
         all_pred_energy.append(pred_energy.cpu())
+
+        torch.npu.synchronize()
+        elapsed = time.time() - start_time
+        perf_stats['energy_time'].append(elapsed)
+        total_samples += pred_energy.shape[0]
+        perf_stats['energy_samples'] = total_samples
+
         if i % 4 == 3:
             gc.collect()
-    
+
     pickle.dump(all_pred_energy, open(save_path, 'wb'))
 
 def aggregate_pose(score_path, energy_path, save_path):
@@ -178,8 +211,11 @@ def aggregate_pose(score_path, energy_path, save_path):
                            for i in range(len(all_pred_pose))]
 
     all_aggregated_pose = []
-    
+    total_samples = 0
+
     for i, (pred_pose, pred_energy) in enumerate(tqdm(zip(all_pred_pose, all_pred_energy), desc="aggregate")):
+        torch.npu.synchronize()
+        start_time = time.time()
         sorted_pose, sorted_energy = sort_poses_by_energy(pred_pose, pred_energy)
         bs = pred_pose.shape[0]
         retain_num = int(cfg.eval_repeat_num * cfg.retain_ratio)
@@ -204,6 +240,13 @@ def aggregate_pose(score_path, energy_path, save_path):
         aggregated_pose[:, :3, :3] = quaternion_to_matrix(aggregated_quat_wxyz)
         aggregated_pose[:, :3, 3] = aggregated_trans
         all_aggregated_pose.append(aggregated_pose)
+
+        torch.npu.synchronize()
+        elapsed = time.time() - start_time
+        perf_stats['aggregate_time'].append(elapsed)
+        total_samples += bs
+        perf_stats['aggregate_samples'] = total_samples
+
         if i % 10 == 9:
             gc.collect()
     
@@ -219,8 +262,11 @@ def inference_scale(score_path, aggregate_path, save_path):
 
     if cfg.pretrained_scale_model_path is None:
         all_final_length = []
+        total_samples = 0
 
         for i, test_batch in enumerate(tqdm(dataloader, desc="bbox")):
+            torch.npu.synchronize()
+            start_time = time.time()
             pcl: torch.Tensor = test_batch['pcl_in'] # [bs, 1024, 3]
             rotation: torch.Tensor = all_aggregated_pose[i][:, :3, :3] # [bs, 3, 3]
             rotation_t = torch.transpose(rotation, 1, 2) # [bs, 3, 3]
@@ -236,6 +282,12 @@ def inference_scale(score_path, aggregate_path, save_path):
             bbox_length *= 2
             all_final_length.append(bbox_length.cpu())
 
+            torch.npu.synchronize()
+            elapsed = time.time() - start_time
+            perf_stats['bbox_time'].append(elapsed)
+            total_samples += pcl.shape[0]
+            perf_stats['bbox_samples'] = total_samples
+
             if i % 10 == 9:
                 gc.collect()
 
@@ -249,8 +301,12 @@ def inference_scale(score_path, aggregate_path, save_path):
 
     all_final_pose = []
     all_final_length = []
+    total_samples = 0
 
     for i, test_batch in enumerate(tqdm(dataloader, desc="scale")):
+        torch.npu.synchronize()
+        start_time = time.time()
+
         batch_sample = process_batch(
             batch_sample = test_batch, 
             device=cfg.device, 
@@ -264,6 +320,13 @@ def inference_scale(score_path, aggregate_path, save_path):
         final_pose[:, :3, :3] = cal_mat.cpu()
         all_final_pose.append(final_pose.cpu())
         all_final_length.append(length.cpu())
+
+        torch.npu.synchronize()
+        elapsed = time.time() - start_time
+        perf_stats['scale_time'].append(elapsed)
+        total_samples += length.shape[0]
+        perf_stats['scale_samples'] = total_samples
+
         if i % 4 == 3:
             gc.collect()
     
@@ -343,6 +406,52 @@ def print_metrics(dm_path, criterion_path, save_path):
     
     metrics.dump_json(save_path)
 
+def print_performance_stats():
+    """Print performance statistics for each inference stage."""
+    print("\n" + "="*60)
+    print("Performance Statistics")
+    print("="*60)
+
+    stages = [
+        ('Score Network', 'score_time', 'score_samples'),
+        ('Energy Network', 'energy_time', 'energy_samples'),
+        ('Pose Aggregation', 'aggregate_time', 'aggregate_samples'),
+        ('Scale Network', 'scale_time', 'scale_samples'),
+        ('Bbox Calculation', 'bbox_time', 'bbox_samples'),
+    ]
+
+    for stage_name, time_key, samples_key in stages:
+        if len(perf_stats[time_key]) > 0:
+            times = perf_stats[time_key]
+            samples = perf_stats[samples_key]
+            total_time = sum(times)
+            avg_batch_time = total_time / len(times)
+            fps = samples / total_time if total_time > 0 else 0
+
+            print(f"\n{stage_name}:")
+            print(f"  Total batches: {len(times)}")
+            print(f"  Total samples: {samples}")
+            print(f"  Total time: {total_time:.3f}s")
+            print(f"  Avg batch time: {avg_batch_time:.3f}s")
+            print(f"  FPS: {fps:.3f}")
+            print(f"  Avg latency per sample: {1000/fps if fps > 0 else 0:.2f}ms")
+
+    # Calculate overall statistics
+    total_samples = perf_stats['score_samples']
+    total_time = sum(perf_stats['score_time']) + sum(perf_stats.get('energy_time', [0])) + \
+                 sum(perf_stats.get('aggregate_time', [0])) + \
+                 sum(perf_stats.get('scale_time', []) if perf_stats['scale_time'] else perf_stats.get('bbox_time', []))
+
+    if total_time > 0:
+        overall_fps = total_samples / total_time
+        print(f"\n{'='*60}")
+        print(f"Overall Pipeline:")
+        print(f"  Total samples: {total_samples}")
+        print(f"  Total time: {total_time:.3f}s")
+        print(f"  Overall FPS: {overall_fps:.3f}")
+        print(f"  Avg latency per sample: {1000/overall_fps:.2f}ms")
+        print("="*60)
+
 def visualize_pose_distribution(score_path, dm_path):
     all_pred_pose, _ = pickle.load(open(score_path, 'rb'))
     all_dm: DetectMatch = pickle.load(open(dm_path, 'rb'))
@@ -396,3 +505,6 @@ get_criterion(dm_save_path, criterion_save_path)
 
 metrics_save_path = f'results/evaluation_results/{cfg.result_dir}/metrics.json'
 print_metrics(dm_save_path, criterion_save_path, metrics_save_path)
+
+# Print performance statistics
+print_performance_stats()
