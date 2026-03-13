@@ -247,13 +247,13 @@ def visualize_pose(data:InferDataset, all_final_pose, all_final_length, visualiz
     all_final_length = all_final_length[0].cpu().numpy()
 
     for index, (obj_pose, obj_length) in enumerate(zip(all_final_pose, all_final_length)):
-        if visualize_pts:
-            # open3d Not needed for offline inference
-            # pts = data.get_objects()['pts'].cpu().numpy()[index]
-            # pcd = o3d.geometry.PointCloud()
-            # pcd.points = o3d.utility.Vector3dVector(pts)
-            # o3d.visualization.draw_geometries([pcd])
-            # print(f"Object {index}: visualize_pts is not supported (open3d disabled)")
+        # open3d Not needed for offline inference
+        # if visualize_pts:
+        #     pts = data.get_objects()['pts'].cpu().numpy()[index]
+        #     pcd = o3d.geometry.PointCloud()
+        #     pcd.points = o3d.utility.Vector3dVector(pts)
+        #     o3d.visualization.draw_geometries([pcd])
+        #     print(f"Object {index}: visualize_pts is not supported (open3d disabled)")
         color_img = DetectMatch._draw_image(
             vis_img=color_img,
             pred_affine=obj_pose,

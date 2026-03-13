@@ -5,7 +5,7 @@ import torch.nn as nn
 from typing import Tuple
 import sys
 
-import pointnet2_torch as pointnet2
+import pointnet2_ops as pointnet2
 
 
 class FurthestPointSampling(Function):

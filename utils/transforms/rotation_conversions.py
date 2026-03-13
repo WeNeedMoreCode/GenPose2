@@ -554,7 +554,7 @@ def quaternion_to_axis_angle(quaternions: torch.Tensor) -> torch.Tensor:
 
 
 
-def simple_cross(a, b):
+def _simple_cross(a, b):
     c1 = a[...,1]*b[...,2] - a[...,2]*b[...,1]
     c2 = a[...,2]*b[...,0] - a[...,0]*b[...,2]
     c3 = a[...,0]*b[...,1] - a[...,1]*b[...,0]
@@ -580,7 +580,7 @@ def rotation_6d_to_matrix(d6: torch.Tensor) -> torch.Tensor:
     b1 = F.normalize(a1, dim=-1)
     b2 = a2 - (b1 * a2).sum(-1, keepdim=True) * b1
     b2 = F.normalize(b2, dim=-1)
-    b3 = simple_cross(b1, b2)
+    b3 = _simple_cross(b1, b2)
     return torch.stack((b1, b2, b3), dim=-2)
 
 

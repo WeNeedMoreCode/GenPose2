@@ -45,12 +45,12 @@ random.seed(cfg.seed)
 np.random.seed(cfg.seed)
 
 
-def apply_patches():
-    def patched_blilinear2d(input, output_size, align_corners,scale_factors):
+def apply_spec_ops_patches():
+    def patched_bilinear2d(input, output_size, align_corners,scale_factors):
         original_device = input.device
         input_cpu = input.cpu()
 
-        result_tmp = _original_blilinear2d(
+        result_tmp = _original_bilinear2d(
             input_cpu,
             output_size,
             align_corners, 
@@ -66,10 +66,10 @@ def apply_patches():
         result = result_tmp.to(device=original_device)
         return result
     
-    _original_blilinear2d = torch._C._nn.upsample_bilinear2d
+    _original_bilinear2d = torch._C._nn.upsample_bilinear2d
     _original_max_pool2d = F.max_pool2d
 
-    torch._C._nn.upsample_bilinear2d = patched_blilinear2d
+    torch._C._nn.upsample_bilinear2d = patched_bilinear2d
     F.max_pool2d = patched_max_pool2d
 
 def get_dataloader():
@@ -365,7 +365,7 @@ def visualize_pose_distribution(score_path, dm_path):
             all_dm.draw_image(index=index)
             set_trace()
 
-apply_patches()
+apply_spec_ops_patches()
 os.makedirs(f'results/evaluation_results/{cfg.result_dir}', exist_ok=True)
 
 score_model_name = '_'.join(cfg.pretrained_score_model_path.split('/')[-2:])

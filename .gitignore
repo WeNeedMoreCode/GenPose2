@@ -10,4 +10,3 @@ configs/real_obj_meta.json
 results/*
 common
 *.DS_Store
-*.md
