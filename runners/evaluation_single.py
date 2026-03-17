@@ -120,6 +120,26 @@ def inference_score(save_path):
     score_agent.load_ckpt(model_dir=cfg.pretrained_score_model_path, model_path=True, load_model_only=True)
     score_agent.eval()
 
+    # torchair graph compilation for NPU
+    try:
+        import torchair as tng
+        from torchair.configs.compiler_config import CompilerConfig
+
+        print("Compiling score_agent with torchair...")
+        config = CompilerConfig()
+        config.experimental_config.frozen_parameter = True
+        npu_backend = tng.get_npu_backend(compiler_config=config)
+        score_agent.net = torch.compile(
+            score_agent.net,
+            dynamic=True,
+            fullgraph=True,
+            backend=npu_backend
+        )
+        print("ScoreAgent compiled successfully")
+    except Exception as e:
+        print(f"Torchair compilation failed for score_agent: {e}")
+        print("Continuing without torchair optimization...")
+
     all_pred_pose = []
     all_score_feature = []
     total_samples = 0
@@ -165,6 +185,26 @@ def inference_energy(score_path, save_path):
     energy_agent = PoseNet(cfg)
     energy_agent.load_ckpt(model_dir=cfg.pretrained_energy_model_path, model_path=True, load_model_only=True)
     energy_agent.eval()
+
+    # torchair graph compilation for NPU
+    try:
+        import torchair as tng
+        from torchair.configs.compiler_config import CompilerConfig
+
+        print("Compiling energy_agent with torchair...")
+        config = CompilerConfig()
+        config.experimental_config.frozen_parameter = True
+        npu_backend = tng.get_npu_backend(compiler_config=config)
+        energy_agent.net = torch.compile(
+            energy_agent.net,
+            dynamic=True,
+            fullgraph=True,
+            backend=npu_backend
+        )
+        print("EnergyAgent compiled successfully")
+    except Exception as e:
+        print(f"Torchair compilation failed for energy_agent: {e}")
+        print("Continuing without torchair optimization...")
 
     all_pred_energy = []
     total_samples = 0
@@ -298,6 +338,26 @@ def inference_scale(score_path, aggregate_path, save_path):
     scale_agent = PoseNet(cfg)
     scale_agent.load_ckpt(model_dir=cfg.pretrained_scale_model_path, model_path=True, load_model_only=True)
     scale_agent.eval()
+
+    # torchair graph compilation for NPU
+    try:
+        import torchair as tng
+        from torchair.configs.compiler_config import CompilerConfig
+
+        print("Compiling scale_agent with torchair...")
+        config = CompilerConfig()
+        config.experimental_config.frozen_parameter = True
+        npu_backend = tng.get_npu_backend(compiler_config=config)
+        scale_agent.net = torch.compile(
+            scale_agent.net,
+            dynamic=True,
+            fullgraph=True,
+            backend=npu_backend
+        )
+        print("ScaleAgent compiled successfully")
+    except Exception as e:
+        print(f"Torchair compilation failed for scale_agent: {e}")
+        print("Continuing without torchair optimization...")
 
     all_final_pose = []
     all_final_length = []
