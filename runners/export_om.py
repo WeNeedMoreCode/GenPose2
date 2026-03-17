@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from configs.config import get_config
-from networks.posenet import PoseNet
+from networks.posenet_agent import PoseNet
 
 
 def get_model_input_info(agent_type, cfg):
@@ -309,33 +309,44 @@ def main():
                         help='Agent type to export')
     parser.add_argument('--output_dir', type=str, default='./om_models',
                         help='Output directory for ONNX models')
-    parser.add_argument('--data_path', type=str, required=True,
-                        help='Path to dataset (needed for config)')
+    parser.add_argument('--checkpoint_path', type=str, default=None,
+                        help='Path to checkpoint (auto-detected if not specified)')
 
     args = parser.parse_args()
 
-    # Setup config
+    # Setup config (export doesn't need real data)
     sys.argv = [
         'export_om.py',
-        '--data_path', args.data_path,
+        '--data_path', './data',  # Dummy path, not used for export
         '--device', 'cpu',  # Use CPU for export
     ]
 
     cfg = get_config()
 
     # Determine checkpoint path
-    if args.agent_type == 'score':
-        if not hasattr(cfg, 'pretrained_score_model_path') or cfg.pretrained_score_model_path is None:
-            cfg.pretrained_score_model_path = './results/ckpts/ScoreNet/scorenet.pth'
-    elif args.agent_type == 'energy':
-        if not hasattr(cfg, 'pretrained_energy_model_path') or cfg.pretrained_energy_model_path is None:
-            cfg.pretrained_energy_model_path = './results/ckpts/EnergyNet/energynet.pth'
-    elif args.agent_type == 'scale':
-        if not hasattr(cfg, 'pretrained_scale_model_path') or cfg.pretrained_scale_model_path is None:
-            cfg.pretrained_scale_model_path = './results/ckpts/ScaleNet/scalenet.pth'
+    checkpoint_path = args.checkpoint_path
+    if checkpoint_path is None:
+        # Auto-detect checkpoint path based on agent type
+        if args.agent_type == 'score':
+            checkpoint_path = getattr(cfg, 'pretrained_score_model_path',
+                                        './results/ckpts/ScoreNet/scorenet.pth')
+        elif args.agent_type == 'energy':
+            checkpoint_path = getattr(cfg, 'pretrained_energy_model_path',
+                                        './results/ckpts/EnergyNet/energynet.pth')
+        elif args.agent_type == 'scale':
+            checkpoint_path = getattr(cfg, 'pretrained_scale_model_path',
+                                        './results/ckpts/ScaleNet/scalenet.pth')
+
+        print(f"Auto-detected checkpoint: {checkpoint_path}")
+
+    # Check if checkpoint exists
+    if not os.path.exists(checkpoint_path):
+        print(f"\nWarning: Checkpoint not found: {checkpoint_path}")
+        print(f"Please specify the correct path with --checkpoint_path")
+        return
 
     # Export
-    success = export_to_onnx(args.agent_type, None, args.output_dir, cfg)
+    success = export_to_onnx(args.agent_type, checkpoint_path, args.output_dir, cfg)
 
     if success:
         print(f"\n{'='*60}")
