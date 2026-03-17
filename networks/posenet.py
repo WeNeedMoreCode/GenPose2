@@ -2,7 +2,6 @@ import sys
 import os
 import torch
 import torch.nn as nn
-import torch._dynamo
 
 from ipdb import set_trace
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -94,7 +93,6 @@ class GFObjectPose(nn.Module):
                 norm_energy=self.cfg.norm_energy)
         ''' ToDo: ranking network '''
 
-    @torch._dynamo.disable
     def extract_pts_feature(self, data):
         """extract the input pointcloud feature
 

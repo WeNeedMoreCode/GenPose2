@@ -151,7 +151,7 @@ class PoseNet(nn.Module):
             
 
     def load_ckpt(self, name=None, model_dir=None, model_path=False, load_model_only=False):
-        """load checkpoint from saved checkpoint"""
+        """load checkpoint from saved checkpoint or OM model"""
         if not model_path:
             if name == 'latest':
                 pass
@@ -166,17 +166,53 @@ class PoseNet(nn.Module):
                 load_path = os.path.join(model_dir, "{}.pth".format(name))
         else:
             load_path = model_dir
+
+        # Check if this is an OM model
+        if load_path.endswith('.om'):
+            print(f"Detected OM model: {load_path}")
+
+            # Try to find metadata file
+            metadata_path = load_path.replace('.om', '_metadata.json')
+            if not os.path.exists(metadata_path):
+                # Try alternative naming
+                metadata_path = load_path.replace('.om', '.json')
+            if not os.path.exists(metadata_path):
+                metadata_path = None
+                print("Warning: Metadata file not found, using default configuration")
+
+            # Load OM model using OMInferSession
+            try:
+                from networks.om_backend import OMInferSession, is_om_model
+
+                # Determine device ID from cfg.device
+                device_id = 0
+                if isinstance(self.cfg.device, str) and 'npu:' in self.cfg.device:
+                    device_id = int(self.cfg.device.split(':')[1])
+
+                # Create OM inference session
+                self.net = OMInferSession(
+                    om_model_path=load_path,
+                    metadata_path=metadata_path,
+                    device_id=device_id
+                )
+                print(f"✓ OM model loaded successfully")
+                return  # Skip PyTorch checkpoint loading
+
+            except Exception as e:
+                raise RuntimeError(f"Failed to load OM model: {e}")
+
+        # Original PyTorch checkpoint loading
         if not os.path.exists(load_path):
             raise ValueError("Checkpoint {} not exists.".format(load_path))
 
         checkpoint = torch.load(load_path, map_location=self.cfg.device)
         print("Loading checkpoint from {} ...".format(load_path))
-        
+
         if isinstance(self.net, nn.DataParallel):
             self.net.module.load_state_dict(checkpoint['model_state_dict'])
         else:
             self.net.load_state_dict(checkpoint['model_state_dict'])
-        
+
         if not load_model_only:
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
