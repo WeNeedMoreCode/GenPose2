@@ -122,17 +122,22 @@ def inference_score(save_path):
 
     # torchair graph compilation for NPU
     try:
+        import torch._dynamo
         import torchair as tng
         from torchair.configs.compiler_config import CompilerConfig
 
         print("Compiling score_agent with torchair...")
+
+        # Suppress dynamo errors and fallback to eager for unsupported ops
+        torch._dynamo.config.suppress_errors = True
+
         config = CompilerConfig()
         config.experimental_config.frozen_parameter = True
         npu_backend = tng.get_npu_backend(compiler_config=config)
         score_agent.net = torch.compile(
             score_agent.net,
             dynamic=True,
-            fullgraph=True,
+            fullgraph=False,  # Changed to False to avoid fullgraph issues
             backend=npu_backend
         )
         print("ScoreAgent compiled successfully")
@@ -188,17 +193,22 @@ def inference_energy(score_path, save_path):
 
     # torchair graph compilation for NPU
     try:
+        import torch._dynamo
         import torchair as tng
         from torchair.configs.compiler_config import CompilerConfig
 
         print("Compiling energy_agent with torchair...")
+
+        # Suppress dynamo errors and fallback to eager for unsupported ops
+        torch._dynamo.config.suppress_errors = True
+
         config = CompilerConfig()
         config.experimental_config.frozen_parameter = True
         npu_backend = tng.get_npu_backend(compiler_config=config)
         energy_agent.net = torch.compile(
             energy_agent.net,
             dynamic=True,
-            fullgraph=True,
+            fullgraph=False,  # Changed to False to avoid fullgraph issues
             backend=npu_backend
         )
         print("EnergyAgent compiled successfully")
@@ -341,17 +351,22 @@ def inference_scale(score_path, aggregate_path, save_path):
 
     # torchair graph compilation for NPU
     try:
+        import torch._dynamo
         import torchair as tng
         from torchair.configs.compiler_config import CompilerConfig
 
         print("Compiling scale_agent with torchair...")
+
+        # Suppress dynamo errors and fallback to eager for unsupported ops
+        torch._dynamo.config.suppress_errors = True
+
         config = CompilerConfig()
         config.experimental_config.frozen_parameter = True
         npu_backend = tng.get_npu_backend(compiler_config=config)
         scale_agent.net = torch.compile(
             scale_agent.net,
             dynamic=True,
-            fullgraph=True,
+            fullgraph=False,  # Changed to False to avoid fullgraph issues
             backend=npu_backend
         )
         print("ScaleAgent compiled successfully")
