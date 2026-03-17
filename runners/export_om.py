@@ -187,15 +187,8 @@ def export_to_onnx(agent_type, checkpoint_path, output_dir, cfg):
     cfg.agent_type = agent_type
     agent = PoseNet(cfg)
 
-    # Set checkpoint path based on agent type
-    if agent_type == 'score':
-        checkpoint = cfg.pretrained_score_model_path
-    elif agent_type == 'energy':
-        checkpoint = cfg.pretrained_energy_model_path
-    elif agent_type == 'scale':
-        checkpoint = cfg.pretrained_scale_model_path
-    else:
-        raise ValueError(f"Unknown agent_type: {agent_type}")
+    # Use the provided checkpoint_path
+    checkpoint = checkpoint_path
 
     print(f"Loading checkpoint: {checkpoint}")
     agent.load_ckpt(model_dir=checkpoint, model_path=True, load_model_only=True)
@@ -232,24 +225,20 @@ def export_to_onnx(agent_type, checkpoint_path, output_dir, cfg):
     for name in output_names:
         dynamic_axes[name] = {0: 'batch_size'}
 
-    try:
-        torch.onnx.export(
-            wrapper,
-            tuple(dummy_inputs),
-            str(onnx_path),
-            input_names=input_names,
-            output_names=output_names,
-            dynamic_axes=dynamic_axes,
-            opset_version=17,
-            do_constant_folding=True,
-            verbose=False,
-        )
-        print(f"✓ ONNX export successful: {onnx_path}")
-    except Exception as e:
-        print(f"✗ ONNX export failed: {e}")
-        print("\nNote: Some operations (like DINOv2, ODE sampling) may not be ONNX compatible.")
-        print("Consider exporting only specific sub-modules or using OM format with custom operators.")
-        return False
+
+    torch.onnx.export(
+        wrapper,
+        tuple(dummy_inputs),
+        str(onnx_path),
+        input_names=input_names,
+        output_names=output_names,
+        dynamic_axes=dynamic_axes,
+        opset_version=17,
+        do_constant_folding=True,
+        verbose=False,
+    )
+    print(f"✓ ONNX export successful: {onnx_path}")
+
 
     # Save metadata
     metadata_path = output_dir / f"{agent_type}_metadata.json"
@@ -275,29 +264,27 @@ def export_to_onnx(agent_type, checkpoint_path, output_dir, cfg):
     # Export sub-modules separately
     print(f"\nExporting sub-modules...")
 
-    # Export PointNet2 encoder
-    try:
-        if hasattr(agent.net, 'pts_encoder'):
-            pts_encoder_path = output_dir / f"{agent_type}_pointnet2.onnx"
-            dummy_pts = torch.randn(1, 1024, 3, dtype=torch.float32)
-            if cfg.dino == 'pointwise':
-                dummy_rgb_feat = torch.randn(1, 1024, 384, dtype=torch.float32)
-                dummy_pts_input = torch.cat([dummy_pts, dummy_rgb_feat], dim=-1)
-            else:
-                dummy_pts_input = dummy_pts
 
-            torch.onnx.export(
-                agent.net.pts_encoder,
-                dummy_pts_input,
-                str(pts_encoder_path),
-                input_names=['pts'],
-                output_names=['pts_feat'],
-                dynamic_axes={'pts': {0: 'batch_size'}, 'pts_feat': {0: 'batch_size'}},
-                opset_version=17,
-            )
-            print(f"✓ PointNet2 exported: {pts_encoder_path}")
-    except Exception as e:
-        print(f"✗ PointNet2 export failed: {e}")
+    if hasattr(agent.net, 'pts_encoder'):
+        pts_encoder_path = output_dir / f"{agent_type}_pointnet2.onnx"
+        dummy_pts = torch.randn(1, 1024, 3, dtype=torch.float32)
+        if cfg.dino == 'pointwise':
+            dummy_rgb_feat = torch.randn(1, 1024, 384, dtype=torch.float32)
+            dummy_pts_input = torch.cat([dummy_pts, dummy_rgb_feat], dim=-1)
+        else:
+            dummy_pts_input = dummy_pts
+
+        torch.onnx.export(
+            agent.net.pts_encoder,
+            dummy_pts_input,
+            str(pts_encoder_path),
+            input_names=['pts'],
+            output_names=['pts_feat'],
+            dynamic_axes={'pts': {0: 'batch_size'}, 'pts_feat': {0: 'batch_size'}},
+            opset_version=17,
+        )
+        print(f"✓ PointNet2 exported: {pts_encoder_path}")
+
 
     return True
 
@@ -329,7 +316,7 @@ def main():
         # Auto-detect checkpoint path based on agent type
         if args.agent_type == 'score':
             checkpoint_path = getattr(cfg, 'pretrained_score_model_path',
-                                        './results/ckpts/ScoreNet/scorenet.pth')
+                                        None) or './results/ckpts/ScoreNet/scorenet.pth'
         elif args.agent_type == 'energy':
             checkpoint_path = getattr(cfg, 'pretrained_energy_model_path',
                                         './results/ckpts/EnergyNet/energynet.pth')

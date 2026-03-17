@@ -24,7 +24,7 @@ class FurthestPointSampling(Function):
 
         B, N, _ = xyz.size()
         device = xyz.device
-        output = torch.empty((B, npoint), dtype=torch.int32, device=device)
+        output = torch.empty((B, npoint), dtype=torch.int64, device=device)
         temp = torch.empty((B, N), dtype=torch.float32, device=device)
         temp.fill_(1e10)
 
@@ -224,7 +224,7 @@ class BallQuery(Function):
         B, N, _ = xyz.size()
         npoint = new_xyz.size(1)
         device = xyz.device
-        idx = torch.empty((B, npoint, nsample), dtype=torch.int32, device=device).zero_()
+        idx = torch.empty((B, npoint, nsample), dtype=torch.int64, device=device).zero_()
 
         pointnet2.ball_query_wrapper(B, N, npoint, radius, nsample, new_xyz, xyz, idx)
         return idx
