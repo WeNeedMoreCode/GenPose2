@@ -93,24 +93,32 @@ class GFObjectPose(nn.Module):
                 norm_energy=self.cfg.norm_energy)
         ''' ToDo: ranking network '''
 
-    def extract_pts_feature(self, data):
+    def extract_pts_feature(self, data, precomputed_rgb_feat=None):
         """extract the input pointcloud feature
 
         Args:
             data (dict): batch example without pointcloud feature. {'pts': [bs, num_pts, 3], 'sampled_pose': [bs, pose_dim], 't': [bs, 1]}
+            precomputed_rgb_feat (torch.Tensor, optional): Pre-computed DINOv2 features [B, 1024, 384].
+                If provided, will skip internal DINOv2 computation and use these features directly.
         Returns:
             data (dict): batch example with pointcloud feature. {'pts': [bs, num_pts, 3], 'pts_feat': [bs, c], 'sampled_pose': [bs, pose_dim], 't': [bs, 1]}
         """
         pts = data['pts']
         if self.cfg.dino == 'pointwise':
-            roi_rgb = data['roi_rgb']
-            feat = self.dino.get_intermediate_layers(roi_rgb)[0]
-            xs = data['roi_xs'] // 14
-            ys = data['roi_ys'] // 14
-            pos = xs * 16 + ys
-            pos = torch.unsqueeze(pos, -1).expand(-1, -1, self.dino_dim)
-            rgb_feat = torch.gather(feat, 1, pos)
-            rgb_feat.requires_grad_(False)
+            # Use precomputed features if provided, otherwise compute with DINOv2
+            if precomputed_rgb_feat is not None:
+                rgb_feat = precomputed_rgb_feat
+                rgb_feat = rgb_feat.to(pts.device)
+            else:
+                # Original path: compute DINOv2 features internally
+                roi_rgb = data['roi_rgb']
+                feat = self.dino.get_intermediate_layers(roi_rgb)[0]
+                xs = data['roi_xs'] // 14
+                ys = data['roi_ys'] // 14
+                pos = xs * 16 + ys
+                pos = torch.unsqueeze(pos, -1).expand(-1, -1, self.dino_dim)
+                rgb_feat = torch.gather(feat, 1, pos)
+                rgb_feat.requires_grad_(False)
         if self.cfg.pts_encoder == 'pointnet':
             assert 0
             pts_feat = self.pts_encoder(pts.permute(0, 2, 1))    # -> (bs, 3, 1024)
@@ -194,6 +202,7 @@ class GFObjectPose(nn.Module):
                 'pts_feat': [bs, c]
                 'sampled_pose': [bs, pose_dim]
                 't': [bs, 1]
+                'precomputed_rgb_feat': [bs, 1024, 384] (optional)
             }
         '''
         if mode == 'score':
@@ -206,7 +215,9 @@ class GFObjectPose(nn.Module):
             likelihoods = self.calc_likelihood(data)
             return likelihoods
         elif mode == 'pts_feature':
-            pts_feature = self.extract_pts_feature(data)
+            # Extract precomputed features if present, then remove from data
+            precomputed_rgb_feat = data.pop('precomputed_rgb_feat', None)
+            pts_feature = self.extract_pts_feature(data, precomputed_rgb_feat=precomputed_rgb_feat)
             return pts_feature
         elif mode == 'rgb_feature':
             if self.cfg.dino != 'global':

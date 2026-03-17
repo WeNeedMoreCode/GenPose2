@@ -111,6 +111,72 @@ def get_dataloader():
 
 dataloader = get_dataloader()
 
+
+# ============================================================================
+# DINOv2 Feature Extraction (Preprocessing)
+# ============================================================================
+
+_dino_model = None
+
+def get_dino_model():
+    """Lazy load DINOv2 model to save memory."""
+    global _dino_model
+    if _dino_model is None and cfg.dino != 'none':
+        print("Loading DINOv2 model for preprocessing...")
+        import torch.hub
+        _dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14').to(cfg.device)
+        _dino_model.eval()
+        _dino_model.requires_grad_(False)
+        print("DINOv2 loaded successfully")
+    return _dino_model
+
+
+def extract_dino_features(batch_sample):
+    """
+    Extract DINOv2 features as a preprocessing step.
+
+    Args:
+        batch_sample: Dict with 'roi_rgb', 'roi_xs', 'roi_ys'
+
+    Returns:
+        rgb_feat: [B, 1024, 384] or None if dino='none'
+    """
+    if cfg.dino == 'none':
+        return None
+
+    dino = get_dino_model()
+    if dino is None:
+        return None
+
+    try:
+        roi_rgb = batch_sample['roi_rgb']  # [B, 3, H, W]
+        roi_xs = batch_sample['roi_xs']    # [B, 1024]
+        roi_ys = batch_sample['roi_ys']    # [B, 1024]
+
+        with torch.no_grad():
+            # Extract DINOv2 features from penultimate layer
+            feat = dino.get_intermediate_layers(roi_rgb, n=1)[0]  # [B, 384, H/14, W/14]
+
+            # Extract features for each point based on their (x, y) coordinates
+            xs = roi_xs // 14
+            ys = roi_ys // 14
+            pos = xs * 16 + ys  # 224x224 input -> 16x16 feature map
+            pos = torch.unsqueeze(pos, -1).expand(-1, -1, 384)
+
+            rgb_feat = torch.gather(feat, 1, pos)  # [B, 1024, 384]
+            rgb_feat.requires_grad_(False)
+
+        return rgb_feat
+
+    except Exception as e:
+        print(f"DINOv2 feature extraction failed: {e}")
+        return None
+
+
+# ============================================================================
+# Inference Functions
+# ============================================================================
+
 def inference_score(save_path):
     if os.path.exists(save_path):
         return
@@ -128,13 +194,19 @@ def inference_score(save_path):
         torch.npu.synchronize()
         start_time = time.time()
         batch_sample = process_batch(
-            batch_sample = test_batch, 
-            device=cfg.device, 
+            batch_sample = test_batch,
+            device=cfg.device,
             pose_mode=cfg.pose_mode,
         )
+
+        # Extract DINOv2 features as preprocessing (outside the model)
+        rgb_feat = extract_dino_features(batch_sample)
+        if rgb_feat is not None:
+            batch_sample['precomputed_rgb_feat'] = rgb_feat
+
         pred_results = score_agent.pred_func(
-            data=batch_sample, 
-            repeat_num=cfg.eval_repeat_num, 
+            data=batch_sample,
+            repeat_num=cfg.eval_repeat_num,
             T0=cfg.T0,
             return_average_res=False,
             return_process=False
@@ -174,15 +246,21 @@ def inference_energy(score_path, save_path):
         start_time = time.time()
 
         batch_sample = process_batch(
-            batch_sample = test_batch, 
-            device=cfg.device, 
+            batch_sample = test_batch,
+            device=cfg.device,
             pose_mode=cfg.pose_mode,
         )
+
+        # Extract DINOv2 features as preprocessing (outside the model)
+        rgb_feat = extract_dino_features(batch_sample)
+        if rgb_feat is not None:
+            batch_sample['precomputed_rgb_feat'] = rgb_feat
+
         pred_energy = energy_agent.get_energy(
-            data=batch_sample, 
-            pose_samples=all_pred_pose[i], 
+            data=batch_sample,
+            pose_samples=all_pred_pose[i],
             T=1e-5,
-            mode='test', 
+            mode='test',
             extract_feature=True
         )
         all_pred_energy.append(pred_energy.cpu())
