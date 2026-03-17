@@ -282,6 +282,7 @@ def visualize_pose(data:InferDataset, all_final_pose, all_final_length, visualiz
 def main():
     ######################################## PARAMETERS ########################################
     DATA_PATH = 'omin6dpose-000/ROPE/000000/'                 # Path to the data
+    RESULT_DIR = 'result_images'                               # Output directory for result images
     TRACKING = True                                           # Tracking mode
 
     # Tracking parameter, if the relative pose between the current frame and the previous frame
@@ -294,6 +295,10 @@ def main():
     SCALE_MODEL_PATH='results/ckpts/ScaleNet/scalenet.pth'     # Path to the scale model
     PREV_POSE = None                                           # Previous pose
     ######################################## PARAMETERS ########################################
+
+    # Create result directory
+    os.makedirs(RESULT_DIR, exist_ok=True)
+    print(f"Results will be saved to: {os.path.abspath(RESULT_DIR)}")
 
     ''' load data '''
     # Get data from image file
@@ -310,6 +315,13 @@ def main():
         data = InferDataset.alternetive_init(data_prefix, img_size=GenPose2.cfg.img_size, device=GenPose2.cfg.device, n_pts=GenPose2.cfg.num_points)
         pose, length = GenPose2.inference(data, PREV_POSE, TRACKING, TRACKING_T0)
         color_image_w_pose = visualize_pose(data, pose, length, visualize_image=False)
+
+        # Save result image to result_images directory
+        image_filename = os.path.basename(color_image)  # e.g., "000123_color.png"
+        output_filename = image_filename.replace('color.png', '_result.png')  # "000123_result.png"
+        output_path = os.path.join(RESULT_DIR, output_filename)
+        cv2.imwrite(output_path, color_image_w_pose)
+
         PREV_POSE = pose
         # cv2.imshow('rgb', color_image_w_pose)  # Not needed for offline inference
         # cv2.waitKey(1)
