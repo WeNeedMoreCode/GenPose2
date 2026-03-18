@@ -109,7 +109,7 @@ def get_dataloader():
     )
     return dataloader
 
-dataloader = get_dataloader()
+
 
 
 # ============================================================================
@@ -552,37 +552,39 @@ def visualize_pose_distribution(score_path, dm_path):
             all_dm.draw_image(index=index)
             set_trace()
 
-apply_spec_ops_patches()
-os.makedirs(f'results/evaluation_results/{cfg.result_dir}', exist_ok=True)
+if __name__ == '__main__':
+    dataloader = get_dataloader()
+    apply_spec_ops_patches()
+    os.makedirs(f'results/evaluation_results/{cfg.result_dir}', exist_ok=True)
 
-score_model_name = '_'.join(cfg.pretrained_score_model_path.split('/')[-2:])
-score_save_path = f'results/evaluation_results/{cfg.result_dir}/score_prediction_{score_model_name}.pkl'
-inference_score(score_save_path)
+    score_model_name = '_'.join(cfg.pretrained_score_model_path.split('/')[-2:])
+    score_save_path = f'results/evaluation_results/{cfg.result_dir}/score_prediction_{score_model_name}.pkl'
+    inference_score(score_save_path)
 
-aggregate_save_path = f'results/evaluation_results/{cfg.result_dir}/aggregated.pkl'
-if cfg.pretrained_energy_model_path is not None:
-    energy_model_name = '_'.join(cfg.pretrained_energy_model_path.split('/')[-2:])
-    energy_save_path = f'results/evaluation_results/{cfg.result_dir}/energy_prediction_{energy_model_name}.pkl'
-    inference_energy(score_save_path, energy_save_path)
-    aggregate_pose(score_save_path, energy_save_path, aggregate_save_path)
-else:
-    aggregate_pose(score_save_path, None, aggregate_save_path)
+    aggregate_save_path = f'results/evaluation_results/{cfg.result_dir}/aggregated.pkl'
+    if cfg.pretrained_energy_model_path is not None:
+        energy_model_name = '_'.join(cfg.pretrained_energy_model_path.split('/')[-2:])
+        energy_save_path = f'results/evaluation_results/{cfg.result_dir}/energy_prediction_{energy_model_name}.pkl'
+        inference_energy(score_save_path, energy_save_path)
+        aggregate_pose(score_save_path, energy_save_path, aggregate_save_path)
+    else:
+        aggregate_pose(score_save_path, None, aggregate_save_path)
 
-if cfg.pretrained_scale_model_path is not None:
-    scale_model_name = '_'.join(cfg.pretrained_scale_model_path.split('/')[-2:])
-else:
-    scale_model_name = 'scale-none'
-cls_save_path = f'results/evaluation_results/{cfg.result_dir}/scale_prediction_{scale_model_name}.pkl'
-inference_scale(score_save_path, aggregate_save_path, cls_save_path)
+    if cfg.pretrained_scale_model_path is not None:
+        scale_model_name = '_'.join(cfg.pretrained_scale_model_path.split('/')[-2:])
+    else:
+        scale_model_name = 'scale-none'
+    cls_save_path = f'results/evaluation_results/{cfg.result_dir}/scale_prediction_{scale_model_name}.pkl'
+    inference_scale(score_save_path, aggregate_save_path, cls_save_path)
 
-dm_save_path = f'results/evaluation_results/{cfg.result_dir}/detect_match.pkl'
-get_detect_match(cls_save_path, dm_save_path)
+    dm_save_path = f'results/evaluation_results/{cfg.result_dir}/detect_match.pkl'
+    get_detect_match(cls_save_path, dm_save_path)
 
-criterion_save_path = f'results/evaluation_results/{cfg.result_dir}/criterion.pkl'
-get_criterion(dm_save_path, criterion_save_path)
+    criterion_save_path = f'results/evaluation_results/{cfg.result_dir}/criterion.pkl'
+    get_criterion(dm_save_path, criterion_save_path)
 
-metrics_save_path = f'results/evaluation_results/{cfg.result_dir}/metrics.json'
-print_metrics(dm_save_path, criterion_save_path, metrics_save_path)
+    metrics_save_path = f'results/evaluation_results/{cfg.result_dir}/metrics.json'
+    print_metrics(dm_save_path, criterion_save_path, metrics_save_path)
 
-# Print performance statistics
-print_performance_stats()
+    # Print performance statistics
+    print_performance_stats()

@@ -29,9 +29,9 @@ from utils.so3_visualize import visualize_so3
 from cutoop.eval_utils import DetectMatch, Metrics
 from configs.config import get_config
 from datasets.datasets_infer import InferDataset
-
-from flask import Flask, request
-flask_app = Flask(__name__)
+from runners.evaluation_single import apply_spec_ops_patches
+# from flask import Flask, request
+# flask_app = Flask(__name__)
 
 
 class GenPose2:
@@ -281,7 +281,7 @@ def visualize_pose(data:InferDataset, all_final_pose, all_final_length, visualiz
 
 def main():
     ######################################## PARAMETERS ########################################
-    DATA_PATH = 'omin6dpose-000/ROPE/000000/'                 # Path to the data
+    DATA_PATH = 'omin6dpose-000a/ROPE/000000/'                 # Path to the data
     RESULT_DIR = 'result_images'                               # Output directory for result images
     TRACKING = True                                           # Tracking mode
 
@@ -294,6 +294,7 @@ def main():
     ENERGY_MODEL_PATH='results/ckpts/EnergyNet/energynet.pth'  # Path to the energy model
     SCALE_MODEL_PATH='results/ckpts/ScaleNet/scalenet.pth'     # Path to the scale model
     PREV_POSE = None                                           # Previous pose
+    apply_spec_ops_patches()
     ######################################## PARAMETERS ########################################
 
     # Create result directory
