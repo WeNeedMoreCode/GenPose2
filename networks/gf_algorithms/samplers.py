@@ -203,6 +203,12 @@ def cond_ode_sampler(
         # num_steps, from T -> eps
         t_eval = np.linspace(T, eps, num_steps)
     res = integrate.solve_ivp(ode_func, (T, eps), init_x.reshape(-1).cpu().numpy(), rtol=rtol, atol=atol, method='RK45', t_eval=t_eval)
+
+    # Print ODE solver statistics
+    print(f"ODE solver: {len(res.t)} steps computed (adaptive)")
+    print(f"Function evaluations: {res.nfev}")
+    print(f"Time range: {res.t[0]:.6f} → {res.t[-1]:.6f}")
+
     xs = torch.tensor(res.y, device=device, dtype=torch.float32).T.view(-1, batch_size, pose_dim) # [num_steps, bs, pose_dim]
     x = torch.tensor(res.y[:, -1], device=device, dtype=torch.float32).reshape(shape) # [bs, pose_dim]
     # denoise, using the predictor step in P-C sampler

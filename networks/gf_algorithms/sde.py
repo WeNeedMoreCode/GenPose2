@@ -26,6 +26,7 @@ def ve_sde(t, sigma_min=0.01, sigma_max=90):
 
 def ve_prior(shape, sigma_min=0.01, sigma_max=90, T=1.0):
     _, sigma_max_prior = ve_marginal_prob(None, T, sigma_min=sigma_min, sigma_max=sigma_max)
+    torch.manual_seed(0)
     return torch.randn(*shape, dtype=torch.float32) * sigma_max_prior
 
 #----- VP SDE -----

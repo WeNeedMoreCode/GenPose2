@@ -119,13 +119,18 @@ def get_dataloader():
 _dino_model = None
 
 def get_dino_model():
-    """Lazy load DINOv2 model to save memory."""
+    """Lazy load DINOv2 model to save memory.
+
+    NOTE: We intentionally do NOT call eval() to match the behavior in GFObjectPose.
+    This ensures consistent feature extraction behavior.
+    """
     global _dino_model
     if _dino_model is None and cfg.dino != 'none':
         print("Loading DINOv2 model for preprocessing...")
         import torch.hub
         _dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14').to(cfg.device)
-        _dino_model.eval()
+        # Intentionally NOT calling eval() to match GFObjectPose behavior (posenet.py:44-45)
+        # _dino_model.eval()  # <-- DO NOT enable this
         _dino_model.requires_grad_(False)
         print("DINOv2 loaded successfully")
     return _dino_model
@@ -148,29 +153,29 @@ def extract_dino_features(batch_sample):
     if dino is None:
         return None
 
-    try:
-        roi_rgb = batch_sample['roi_rgb']  # [B, 3, H, W]
-        roi_xs = batch_sample['roi_xs']    # [B, 1024]
-        roi_ys = batch_sample['roi_ys']    # [B, 1024]
 
-        with torch.no_grad():
-            # Extract DINOv2 features from penultimate layer
-            feat = dino.get_intermediate_layers(roi_rgb, n=1)[0]  # [B, 384, H/14, W/14]
+    roi_rgb = batch_sample['roi_rgb']  # [B, 3, H, W]
+    roi_xs = batch_sample['roi_xs']    # [B, 1024]
+    roi_ys = batch_sample['roi_ys']    # [B, 1024]
 
-            # Extract features for each point based on their (x, y) coordinates
-            xs = roi_xs // 14
-            ys = roi_ys // 14
-            pos = xs * 16 + ys  # 224x224 input -> 16x16 feature map
-            pos = torch.unsqueeze(pos, -1).expand(-1, -1, 384)
+    # Extract DINOv2 features from penultimate layer
+    # Note: No torch.no_grad() wrapper to match original behavior in posenet.py:113-121
+    # Note: No n=1 parameter to match original behavior in posenet.py:115
+    feat = dino.get_intermediate_layers(roi_rgb)[0]  # [B, 384, H/14, W/14]
 
-            rgb_feat = torch.gather(feat, 1, pos)  # [B, 1024, 384]
-            rgb_feat.requires_grad_(False)
+    # Extract features for each point based on their (x, y) coordinates
+    xs = roi_xs // 14
+    ys = roi_ys // 14
+    pos = xs * 16 + ys  # 224x224 input -> 16x16 feature map
+    pos = torch.unsqueeze(pos, -1).expand(-1, -1, 384)
 
-        return rgb_feat
+    rgb_feat = torch.gather(feat, 1, pos)  # [B, 1024, 384]
+    # Match original behavior in posenet.py:121 - use requires_grad_(False) instead of detach()
+    rgb_feat.requires_grad_(False)
 
-    except Exception as e:
-        print(f"DINOv2 feature extraction failed: {e}")
-        return None
+    return rgb_feat
+
+
 
 
 # ============================================================================

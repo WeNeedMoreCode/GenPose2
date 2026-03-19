@@ -23,45 +23,53 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from configs.config import get_config
 from networks.posenet_agent import PoseNet
 
+def dummy_remove_inplace_ops(graph, module):
+    return graph
+
+torch._C._jit_pass_remove_inplace_ops_for_onnx = dummy_remove_inplace_ops
+
 
 def get_model_input_info(agent_type, cfg):
     """
     Get input dimensions and metadata for each agent type.
 
+    For pointnet2 export: inputs are [pts, rgb_feat] concatenated
+    For score/energy/scale: full model export (experimental)
+
     Returns:
         dict: Input information including shapes, dtypes, and names
     """
     if agent_type == 'score':
+        # Score network export - only PointNet2 encoder
         return {
             'inputs': [
-                {'name': 'pts', 'shape': [1, 1024, 3], 'dtype': 'float32', 'format': 'point_cloud'},
-                {'name': 'roi_rgb', 'shape': [1, 3, 224, 224], 'dtype': 'float32', 'format': 'image'},
-                {'name': 'roi_xs', 'shape': [1, 1024], 'dtype': 'int64', 'format': 'coordinates'},
-                {'name': 'roi_ys', 'shape': [1, 1024], 'dtype': 'int64', 'format': 'coordinates'},
+                {'name': 'pts_rgb', 'shape': [1, 1024, 387], 'dtype': 'float32', 'format': 'point_cloud_with_rgb'},
+                # 387 = 3 (xyz) + 384 (dino feature per point)
             ],
             'outputs': [
-                {'name': 'pred_pose', 'shape': [1, 10, 7], 'dtype': 'float32'},
+                {'name': 'pts_feat', 'shape': [1, 1024], 'dtype': 'float32'},
             ],
             'metadata': {
-                'sampling_steps': cfg.sampling_steps,
-                'T0': cfg.T0,
+                'export_type': 'pointnet2_only',
                 'pose_mode': cfg.pose_mode,
             }
         }
 
     elif agent_type == 'energy':
+        # Energy network export
         return {
             'inputs': [
-                {'name': 'pts', 'shape': [1, 1024, 3], 'dtype': 'float32', 'format': 'point_cloud'},
-                {'name': 'roi_rgb', 'shape': [1, 3, 224, 224], 'dtype': 'float32', 'format': 'image'},
-                {'name': 'sampled_pose', 'shape': [1, 10, 7], 'dtype': 'float32', 'format': 'pose'},
+                {'name': 'pts_feat', 'shape': [1, 1024], 'dtype': 'float32', 'format': 'feature'},
+                {'name': 'rgb_feat', 'shape': [1, 400], 'dtype': 'float32', 'format': 'feature'},
+                {'name': 'sampled_pose', 'shape': [1, 7], 'dtype': 'float32', 'format': 'pose'},
+                {'name': 't', 'shape': [1, 1], 'dtype': 'float32', 'format': 'timestep'},
             ],
             'outputs': [
-                {'name': 'pred_energy', 'shape': [1, 10, 2], 'dtype': 'float32'},
+                {'name': 'energy', 'shape': [1, 2], 'dtype': 'float32'},
             ],
             'metadata': {
+                'export_type': 'energy_net_only',
                 'pose_mode': cfg.pose_mode,
-                'energy_mode': cfg.energy_mode,
             }
         }
 
@@ -69,13 +77,14 @@ def get_model_input_info(agent_type, cfg):
         return {
             'inputs': [
                 {'name': 'pts_feat', 'shape': [1, 1024], 'dtype': 'float32', 'format': 'feature'},
-                {'name': 'rgb_feat', 'shape': [1, 384], 'dtype': 'float32', 'format': 'feature'},
+                {'name': 'rgb_feat', 'shape': [1, 400], 'dtype': 'float32', 'format': 'feature'},
                 {'name': 'axes', 'shape': [1, 3, 3], 'dtype': 'float32', 'format': 'matrix'},
             ],
             'outputs': [
                 {'name': 'bbox_length', 'shape': [1, 3], 'dtype': 'float32'},
             ],
             'metadata': {
+                'export_type': 'scale_net',
                 'num_points': cfg.num_points,
             }
         }
@@ -88,8 +97,8 @@ def create_export_wrapper(agent_type, model):
     """
     Create a wrapper for ONNX export with simplified interface.
 
-    The wrapper handles the complex forward() interface of GFObjectPose
-    and provides a clean input/output interface for ONNX export.
+    For score agent: exports only PointNet2 encoder (ODE sampling is not ONNX-compatible)
+    For energy/scale agents: exports the core network
     """
 
     class ExportWrapper(nn.Module):
@@ -110,57 +119,36 @@ def create_export_wrapper(agent_type, model):
                 Output tensors
             """
             if self.agent_type == 'score':
-                pts, roi_rgb, roi_xs, roi_ys = args
-                data = {
-                    'pts': pts,
-                    'roi_rgb': roi_rgb,
-                    'roi_xs': roi_xs,
-                    'roi_ys': roi_ys,
-                    'pts_center': torch.zeros(pts.shape[0], 3, device=pts.device),
-                }
-                # Extract features first (without torch.compile complications)
-                with torch.no_grad():
-                    pts_feat = self.model.net.extract_pts_feature(data)
-                    rgb_feat = self.model.net(data, mode='rgb_feature')
-
-                # For ONNX export, we use a simplified sampling path
-                # This is a placeholder - actual ODE sampling is not exportable
-                # We export the score network only
-                batch_size = pts.shape[0]
-                dummy_pose = torch.randn(batch_size, 10, 7, device=pts.device)
-                return dummy_pose, pts_feat, rgb_feat
+                # Export PointNet2 encoder only
+                # Input: pts_rgb concatenated [pts (xyz) + rgb_feat (dino)]
+                pts_rgb = args[0]
+                pts_feat = self.model.net.pts_encoder(pts_rgb)
+                return pts_feat
 
             elif self.agent_type == 'energy':
-                pts, roi_rgb, sampled_pose = args
-                data = {
-                    'pts': pts,
-                    'roi_rgb': roi_rgb,
-                    'sampled_pose': sampled_pose,
-                    'pts_center': torch.zeros(pts.shape[0], 3, device=pts.device),
-                    't': torch.ones(pts.shape[0], 1, device=pts.device) * 1e-5,
-                }
-                with torch.no_grad():
-                    pts_feat = self.model.net.extract_pts_feature(data)
-                    rgb_feat = self.model.net(data, mode='rgb_feature')
+                # Export energy network
+                pts_feat, rgb_feat, sampled_pose, t = args
 
-                    energy_input_data = {
-                        'pts_feat': pts_feat,
-                        'rgb_feat': rgb_feat,
-                        'sampled_pose': sampled_pose,
-                        't': data['t'],
-                    }
-                    energy = self.model.net(energy_input_data, mode='energy')
+                # Handle rgb_feat (None in pointwise mode)
+                if rgb_feat.numel() == 0:
+                    # Use zero tensor as placeholder
+                    batch_size = pts_feat.shape[0]
+                    rgb_feat = torch.zeros(batch_size, 400, device=pts_feat.device)
+
+                # Call energy network
+                energy = self.model.net.pose_score_net({
+                    'pts_feat': pts_feat,
+                    'rgb_feat': rgb_feat,
+                    'sampled_pose': sampled_pose,
+                    't': t
+                }, return_item='energy')
+
                 return energy
 
             elif self.agent_type == 'scale':
+                # Export scale network
                 pts_feat, rgb_feat, axes = args
-                data = {
-                    'pts_feat': pts_feat,
-                    'rgb_feat': rgb_feat,
-                    'axes': axes,
-                }
-                with torch.no_grad():
-                    length = self.model.net(data)
+                length = self.model.net(pts_feat, rgb_feat, axes)
                 return length
 
     return ExportWrapper(model, agent_type)
@@ -206,9 +194,10 @@ def export_to_onnx(agent_type, checkpoint_path, output_dir, cfg):
     # Prepare dummy inputs
     dummy_inputs = []
     for inp in input_info['inputs']:
-        dummy = torch.randn(inp['shape'], dtype=torch.float32)
         if inp['dtype'] == 'int64':
             dummy = torch.randint(0, 224, inp['shape'], dtype=torch.int64)
+        else:
+            dummy = torch.randn(inp['shape'], dtype=torch.float32)
         dummy_inputs.append(dummy)
 
     # Export to ONNX
@@ -234,8 +223,13 @@ def export_to_onnx(agent_type, checkpoint_path, output_dir, cfg):
         output_names=output_names,
         dynamic_axes=dynamic_axes,
         opset_version=17,
-        do_constant_folding=True,
+        # do_constant_folding=True,
         verbose=False,
+        export_params=True,
+        do_constant_folding=False,
+        keep_initializers_as_inputs=True,
+        operator_export_type=torch.onnx.OperatorExportTypes.ONNX,
+        custtom_opsets={},
     )
     print(f"✓ ONNX export successful: {onnx_path}")
 
