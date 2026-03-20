@@ -31,6 +31,7 @@ from datasets.datasets_omni6dpose import Omni6DPoseDataSet, array_to_SymLabel, a
 from utils.metrics import get_rot_matrix
 from utils.transforms import matrix_to_quaternion, quaternion_to_matrix
 from utils.misc import average_quaternion_batch
+from utils.genpose_utils import get_pose_dim
 from utils.so3_visualize import visualize_so3
 from utils.visualize import create_grid_image
 from cutoop.eval_utils import DetectMatch, Metrics
@@ -291,40 +292,45 @@ def inference_score_decoupled(save_path):
             pts_feat = score_net.net(batch_sample, mode='pts_feature')
             rgb_feat_internal = score_net.net(batch_sample, mode='rgb_feature')
 
-        batch_sample['pts_feat'] = pts_feat
-        batch_sample['rgb_feat'] = rgb_feat_internal
-
         # Get batch info
         bs = batch_sample['pts'].shape[0]
         pose_dim = get_pose_dim(cfg.pose_mode)
+        pts_center = batch_sample.get('pts_center', None)
 
-        # Generate multiple pose candidates using external ODE sampler
-        pred_poses = []
-        for _ in range(cfg.eval_repeat_num):
-            with torch.no_grad():
-                _, sampled_pose = sampler.sample(
-                    pts_feat=pts_feat,
-                    rgb_feat=rgb_feat_internal,
-                    batch_size=bs,
-                    pose_dim=pose_dim,
-                    T=cfg.T0,
-                    eps=sampling_eps,
-                    rtol=1e-5,
-                    atol=1e-5,
-                    denoise=True
-                )
-            pred_poses.append(sampled_pose)
+        # Generate random initial values for all repeats at once (same as original)
+        # This avoids manual_seed(0) being called multiple times in ve_prior
+        init_x_all = prior_fn((bs, cfg.eval_repeat_num, pose_dim), T=cfg.T0).to(cfg.device)
 
-        # Stack into [bs, repeat_num, pose_dim]
-        pred_pose = torch.stack(pred_poses, dim=1)
+        # Repeat features and init_x to process all at once (same as original)
+        # pts_feat: [bs, 1024] -> [bs*repeat_num, 1024]
+        pts_feat_repeated = pts_feat.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
+        rgb_feat_repeated = None if rgb_feat_internal is None else \
+            rgb_feat_internal.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
+        init_x_repeated = init_x_all.view(bs * cfg.eval_repeat_num, pose_dim)
+        pts_center_repeated = None if pts_center is None else \
+            pts_center.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
 
-        # Convert to quaternion format if needed
-        rot_matrix = get_rot_matrix(pred_pose[:, :, :-3].reshape(bs * cfg.eval_repeat_num, -1), cfg.pose_mode)
-        quat_wxyz = matrix_to_quaternion(rot_matrix)
-        res_q_wxyz = torch.cat((quat_wxyz, pred_pose[:, :, -3:]), dim=-1)
-        pred_pose_q_wxyz = res_q_wxyz.reshape(bs, cfg.eval_repeat_num, -1)
+        # Single call to sampler for all repeats (same as original)
+        with torch.no_grad():
+            _, sampled_pose = sampler.sample(
+                pts_feat=pts_feat_repeated,
+                rgb_feat=rgb_feat_repeated,
+                batch_size=bs * cfg.eval_repeat_num,
+                pose_dim=pose_dim,
+                T=cfg.T0,
+                eps=sampling_eps,
+                rtol=1e-5,
+                atol=1e-5,
+                denoise=True,
+                init_x=init_x_repeated,
+                pts_center=pts_center_repeated
+            )
 
-        all_pred_pose.append(pred_pose_q_wxyz)
+        # Reshape result from [bs*repeat_num, pose_dim] to [bs, repeat_num, pose_dim]
+        pred_pose = sampled_pose.view(bs, cfg.eval_repeat_num, pose_dim)
+
+        # Save pred_pose (9-dim rot_matrix format), same as original
+        all_pred_pose.append(pred_pose)
         all_score_feature.append({
             'pts_feat': pts_feat.cpu(),
             'rgb_feat': (None if rgb_feat_internal is None else rgb_feat_internal.cpu()),

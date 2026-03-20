@@ -173,7 +173,7 @@ class ODESamplerExternal:
         return score.cpu().numpy().reshape((-1,))
 
     def sample(self, pts_feat, rgb_feat, batch_size, pose_dim,
-               eps=1e-5, T=1.0, rtol=1e-5, atol=1e-5, denoise=True, init_x=None):
+               eps=1e-5, T=1.0, rtol=1e-5, atol=1e-5, denoise=True, init_x=None, pts_center=None):
         """
         Run ODE sampling using SciPy RK45 solver.
 
@@ -197,8 +197,9 @@ class ODESamplerExternal:
         from scipy import integrate
 
         # Initialize
-        init_x = self.prior_fn((batch_size, pose_dim), T=T).to(self.device) \
-            if init_x is None else init_x + self.prior_fn((batch_size, pose_dim), T=T).to(self.device)
+        # If init_x is provided, use it directly (don't add noise since we pre-generated all noise)
+        # Otherwise generate random noise
+        init_x = self.prior_fn((batch_size, pose_dim), T=T).to(self.device) if init_x is None else init_x
 
         shape = init_x.shape
         data = {
@@ -232,19 +233,30 @@ class ODESamplerExternal:
 
         # Denoising step (if requested)
         if denoise:
+            # Reverse diffusion predictor for denoising (same as original cond_ode_sampler:221)
             vec_eps = torch.ones((x.shape[0], 1), device=x.device) * eps
             drift, diffusion = self.sde_coeff(vec_eps)
             data['sampled_pose'] = x.float()
             data['t'] = vec_eps
-            grad = self.score_eval_wrapper(data)
+            grad = self.score_network.get_score(data)  # Returns tensor, not numpy
             drift = drift - diffusion**2 * grad
             mean_x = x + drift * ((1 - eps) / 1000)
             x = mean_x
 
-        # Normalize rotation
-        from utils.transforms.rotation_conversions import normalize_rotation
-        xs[:, :, :-3] = normalize_rotation(xs[:, :, :-3], self.cfg.pose_mode)
-        x[:, :-3] = normalize_rotation(x[:, :-3], self.cfg.pose_mode)
+        # Normalize rotation (same as original cond_ode_sampler:226-232)
+        from utils.misc import normalize_rotation
+        pose_mode = self.score_network.cfg.pose_mode
+
+        num_steps = xs.shape[0]
+        xs = xs.reshape(batch_size * num_steps, -1)
+        xs[:, :-3] = normalize_rotation(xs[:, :-3], pose_mode)
+        xs = xs.reshape(num_steps, batch_size, -1)
+        if pts_center is not None:
+            xs[:, :, -3:] += pts_center.unsqueeze(0).repeat(xs.shape[0], 1, 1)
+
+        x[:, :-3] = normalize_rotation(x[:, :-3], pose_mode)
+        if pts_center is not None:
+            x[:, -3:] += pts_center
 
         return xs.permute(1, 0, 2), x
 
@@ -269,15 +281,23 @@ def create_ode_sampler(score_network, sde, device='npu:0'):
 
     Args:
         score_network: ScoreNetworkWrapper instance
-        sde: SDE object containing prior_fn and sde_coeff
+        sde: SDE object or dict containing prior_fn and sde_fn/sde_coeff
         device: Device to run on
 
     Returns:
         ODESamplerExternal instance
     """
+    # Handle both dict and object inputs
+    if isinstance(sde, dict):
+        prior_fn = sde['prior_fn']
+        sde_coeff = sde.get('sde_coeff', sde.get('sde_fn'))
+    else:
+        prior_fn = sde.prior_fn
+        sde_coeff = sde.sde_fn if hasattr(sde, 'sde_fn') else sde.sde_coeff
+
     return ODESamplerExternal(
         score_network=score_network,
-        prior_fn=sde.prior_fn,
-        sde_coeff=sde.sde_fn,
+        prior_fn=prior_fn,
+        sde_coeff=sde_coeff,
         device=device
     )
