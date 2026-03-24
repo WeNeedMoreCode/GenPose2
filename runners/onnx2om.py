@@ -23,7 +23,7 @@ def convert_onnx_to_om(
     onnx_path="./onnx_models/score_network.onnx",
     output_path=None,
     batch_size=1,
-    soc_version="Ascend310P"
+    soc_version="Ascend310P3"
 ):
     """
     Convert ONNX model to OM format using ATC tool.
@@ -118,7 +118,7 @@ def convert_onnx_to_om(
     print()
 
     result = subprocess.run(atc_cmd, capture_output=True, text=True)
-
+    output_path = Path(output_dir) / f".om"
     # Check if file was created
     if output_path.exists():
         print()
@@ -143,9 +143,11 @@ def convert_onnx_to_om(
         print("✗ OM conversion failed!")
         print("  Output file not created")
         print()
-        if result.stderr:
-            print("Error output:")
+        if result.stderr or result.stdout:
+            print("Stderr:")
             print(result.stderr)
+            print('Stdout:')
+            print(result.stdout)
         print("=" * 60)
         return False
 
@@ -163,8 +165,8 @@ def main():
                         help='Path to output OM model (auto-detected from onnx_path if not specified)')
     parser.add_argument('--batch_size', type=int, default=1,
                         help='Batch size for ATC conversion (default: 1)')
-    parser.add_argument('--soc_version', type=str, default='Ascend310P',
-                        help='SoC version (default: Ascend310P)')
+    parser.add_argument('--soc_version', type=str, default='Ascend310P3',
+                        help='SoC version (default: Ascend310P3)')
 
     args = parser.parse_args()
 

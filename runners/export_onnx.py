@@ -186,7 +186,7 @@ def export_energy_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu'
     energy_cfg.dino = 'pointwise'
 
     agent = PoseNet(energy_cfg)
-    agent.load_ckpt(checkpoint_path, model_path=True, load_model_only=True)
+    agent.load_ckpt(model_dir=checkpoint_path, model_path=True, load_model_only=True)
     net = agent.net
     net.eval()
 
@@ -201,6 +201,7 @@ def export_energy_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu'
 
     # Prepare dummy inputs
     pts_feat = torch.randn(1, 1024, dtype=torch.float32)
+    rgb_feat = None  # pointwise mode: already fused in pts_feat
     sampled_pose = torch.randn(1, 9, dtype=torch.float32)
     t = torch.randn(1, 1, dtype=torch.float32)
 
@@ -208,30 +209,34 @@ def export_energy_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu'
     onnx_path = output_dir / "energy_network.onnx"
     print(f"\nExporting to {onnx_path}...")
 
-    # Export function - converts dict input to positional args
-    def export_fn(pts_feat, sampled_pose, t):
-        data = {
-            'pts_feat': pts_feat,
-            'rgb_feat': None,
-            'sampled_pose': sampled_pose,
-            't': t
-        }
-        return net(data, mode='energy')
+    # Minimal wrapper to set return_item='energy'
+    class EnergyExportWrapper(nn.Module):
+        def __init__(self, net):
+            super().__init__()
+            self.net = net
+        def forward(self, pts_feat, sampled_pose, t):
+            data = {
+                'pts_feat': pts_feat,
+                'rgb_feat': None,  # pointwise mode: already fused in pts_feat
+                'sampled_pose': sampled_pose,
+                't': t
+            }
+            return self.net(data, return_item='energy')
 
-    dynamic_axes = {
-        'pts_feat': {0: 'batch_size'},
-        'sampled_pose': {0: 'batch_size'},
-        't': {0: 'batch_size'},
-        'energy': {0: 'batch_size'},
-    }
+    energy_net = EnergyExportWrapper(net.pose_score_net)
 
     torch.onnx.export(
-        export_fn,
+        energy_net,
         (pts_feat, sampled_pose, t),
         str(onnx_path),
         input_names=['pts_feat', 'sampled_pose', 't'],
         output_names=['energy'],
-        dynamic_axes=dynamic_axes,
+        dynamic_axes={
+            'pts_feat': {0: 'batch_size'},
+            'sampled_pose': {0: 'batch_size'},
+            't': {0: 'batch_size'},
+            'energy': {0: 'batch_size'},
+        },
         opset_version=17,
         verbose=False,
         export_params=True,
@@ -287,7 +292,6 @@ def main():
     # Setup config
     sys.argv = [
         'export_onnx.py',
-        '--data_path', './data',  # Dummy path, not used for export
         '--device', args.device,
         '--dino', 'pointwise',  # Enable DINOv2 (must match checkpoint training mode)
     ]
