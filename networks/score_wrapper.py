@@ -47,6 +47,7 @@ class ScoreNetworkWrapper(nn.Module):
         cfg = get_config()
         cfg.agent_type = 'score'
         cfg.device = device
+        cfg.dino = 'pointwise'  # Enable DINOv2 (must match checkpoint training mode)
 
         # Load ScoreNet
         self.score_agent = PoseNet(cfg)

@@ -167,41 +167,41 @@ class PoseNet(nn.Module):
         else:
             load_path = model_dir
 
-        # Check if this is an OM model
-        if load_path.endswith('.om'):
-            print(f"Detected OM model: {load_path}")
+        # # Check if this is an OM model
+        # if load_path.endswith('.om'):
+        #     print(f"Detected OM model: {load_path}")
 
-            # Try to find metadata file
-            metadata_path = load_path.replace('.om', '_metadata.json')
-            if not os.path.exists(metadata_path):
-                # Try alternative naming
-                metadata_path = load_path.replace('.om', '.json')
-            if not os.path.exists(metadata_path):
-                metadata_path = None
-                print("Warning: Metadata file not found, using default configuration")
+        #     # Try to find metadata file
+        #     metadata_path = load_path.replace('.om', '_metadata.json')
+        #     if not os.path.exists(metadata_path):
+        #         # Try alternative naming
+        #         metadata_path = load_path.replace('.om', '.json')
+        #     if not os.path.exists(metadata_path):
+        #         metadata_path = None
+        #         print("Warning: Metadata file not found, using default configuration")
 
-            # Load OM model using OMInferSession
-            try:
-                from networks.om_backend import OMInferSession, is_om_model
+        #     # Load OM model using OMInferSession
+        #     try:
+        #         from networks.om_backend import OMInferSession, is_om_model
 
-                # Determine device ID from cfg.device
-                device_id = 0
-                if isinstance(self.cfg.device, str) and 'npu:' in self.cfg.device:
-                    device_id = int(self.cfg.device.split(':')[1])
+        #         # Determine device ID from cfg.device
+        #         device_id = 0
+        #         if isinstance(self.cfg.device, str) and 'npu:' in self.cfg.device:
+        #             device_id = int(self.cfg.device.split(':')[1])
 
-                # Create OM inference session
-                self.net = OMInferSession(
-                    om_model_path=load_path,
-                    metadata_path=metadata_path,
-                    device_id=device_id
-                )
-                print(f"✓ OM model loaded successfully")
-                return  # Skip PyTorch checkpoint loading
+        #         # Create OM inference session
+        #         self.net = OMInferSession(
+        #             om_model_path=load_path,
+        #             metadata_path=metadata_path,
+        #             device_id=device_id
+        #         )
+        #         print(f"✓ OM model loaded successfully")
+        #         return  # Skip PyTorch checkpoint loading
 
-            except Exception as e:
-                raise RuntimeError(f"Failed to load OM model: {e}")
+        #     except Exception as e:
+        #         raise RuntimeError(f"Failed to load OM model: {e}")
 
-        # Original PyTorch checkpoint loading
+        # # Original PyTorch checkpoint loading
         if not os.path.exists(load_path):
             raise ValueError("Checkpoint {} not exists.".format(load_path))
 

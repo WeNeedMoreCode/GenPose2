@@ -55,7 +55,10 @@ def diagnose_checkpoint(checkpoint_path):
 
     # Find model state dict
     model_state = None
-    if 'model' in ckpt:
+    if 'model_state_dict' in ckpt:
+        model_state = ckpt['model_state_dict']
+        print(f"4. MODEL STATE DICT (under 'model_state_dict' key)")
+    elif 'model' in ckpt:
         model_state = ckpt['model']
         print(f"4. MODEL STATE DICT (under 'model' key)")
     elif 'state_dict' in ckpt:
@@ -71,6 +74,7 @@ def diagnose_checkpoint(checkpoint_path):
             print(f"4. MODEL STATE DICT (direct state dict)")
         else:
             print(f"4. No model state dict found!")
+            print(f"   Available keys: {top_keys}")
             return
 
     # Analyze model structure
@@ -89,13 +93,15 @@ def diagnose_checkpoint(checkpoint_path):
 
             # Extract module name
             parts = key.split('.')
+            parts_lower = [p.lower() for p in parts]
+
             if 'score_agent' in parts:
                 module = 'score_agent'
             elif 'pose_score_net' in parts:
                 module = 'pose_score_net'
-            elif 'pts_encoder' in parts or 'pointnet' in parts.lower():
+            elif 'pts_encoder' in parts or 'pointnet' in parts_lower:
                 module = 'pts_encoder'
-            elif 'dino' in parts.lower():
+            elif 'dino' in parts_lower:
                 module = 'dino_encoder'
             elif 'rgb_encoder' in parts:
                 module = 'rgb_encoder'

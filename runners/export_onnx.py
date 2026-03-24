@@ -22,11 +22,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from configs.config import get_config
 from networks.score_wrapper import create_score_network
-
-def dummy_remove_inplace_ops(graph, module):
-    return graph
-
-torch._C._jit_pass_remove_inplace_ops_for_onnx = dummy_remove_inplace_ops
+from networks.posenet_agent import PoseNet
 
 
 def get_score_network_input_info(cfg):
@@ -120,21 +116,20 @@ def export_score_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu')
     for name in output_names:
         dynamic_axes[name] = {0: 'batch_size'}
 
-    with torch.no_grad():
-        torch.onnx.export(
-            score_net,
-            tuple(dummy_inputs),
-            str(onnx_path),
-            input_names=input_names,
-            output_names=output_names,
-            dynamic_axes=dynamic_axes,
-            opset_version=17,
-            verbose=False,
-            export_params=True,
-            do_constant_folding=False,
-            keep_initializers_as_inputs=True,
-            operator_export_type=torch.onnx.OperatorExportTypes.ONNX,
-        )
+    torch.onnx.export(
+        score_net,
+        tuple(dummy_inputs),
+        str(onnx_path),
+        input_names=input_names,
+        output_names=output_names,
+        dynamic_axes=dynamic_axes,
+        opset_version=17,
+        verbose=False,
+        export_params=True,
+        do_constant_folding=False,
+        keep_initializers_as_inputs=True,
+        operator_export_type=torch.onnx.OperatorExportTypes.ONNX,
+    )
     print(f"✓ ONNX export successful: {onnx_path}")
 
     # Save metadata
@@ -161,10 +156,125 @@ def export_score_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu')
     return True
 
 
+
+
+def export_energy_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu'):
+    """
+    Export Energy Network to ONNX format.
+
+    Args:
+        checkpoint_path: Path to PyTorch checkpoint
+        output_dir: Directory to save ONNX model and metadata
+        cfg: Configuration object
+        device: Device to load model on
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n{'='*60}")
+    print(f"Exporting Energy Network to ONNX")
+    print(f"{'='*60}")
+
+    # Load PoseNet with energy checkpoint
+    print(f"\nLoading Energy Network...")
+    print(f"  Checkpoint: {checkpoint_path}")
+    print(f"  Device: {device}")
+
+    energy_cfg = get_config()
+    energy_cfg.agent_type = 'energy'
+    energy_cfg.device = device
+    energy_cfg.dino = 'pointwise'
+
+    agent = PoseNet(energy_cfg)
+    agent.load_ckpt(checkpoint_path, model_path=True, load_model_only=True)
+    net = agent.net
+    net.eval()
+
+    # Input info
+    print(f"\nInput info:")
+    print(f"  pts_feat: [1, 1024], float32")
+    print(f"  sampled_pose: [1, 9], float32")
+    print(f"  t: [1, 1], float32")
+
+    print(f"\nOutput info:")
+    print(f"  energy: [1], float32")
+
+    # Prepare dummy inputs
+    pts_feat = torch.randn(1, 1024, dtype=torch.float32)
+    sampled_pose = torch.randn(1, 9, dtype=torch.float32)
+    t = torch.randn(1, 1, dtype=torch.float32)
+
+    # Export to ONNX
+    onnx_path = output_dir / "energy_network.onnx"
+    print(f"\nExporting to {onnx_path}...")
+
+    # Export function - converts dict input to positional args
+    def export_fn(pts_feat, sampled_pose, t):
+        data = {
+            'pts_feat': pts_feat,
+            'rgb_feat': None,
+            'sampled_pose': sampled_pose,
+            't': t
+        }
+        return net(data, mode='energy')
+
+    dynamic_axes = {
+        'pts_feat': {0: 'batch_size'},
+        'sampled_pose': {0: 'batch_size'},
+        't': {0: 'batch_size'},
+        'energy': {0: 'batch_size'},
+    }
+
+    torch.onnx.export(
+        export_fn,
+        (pts_feat, sampled_pose, t),
+        str(onnx_path),
+        input_names=['pts_feat', 'sampled_pose', 't'],
+        output_names=['energy'],
+        dynamic_axes=dynamic_axes,
+        opset_version=17,
+        verbose=False,
+        export_params=True,
+        do_constant_folding=False,
+        keep_initializers_as_inputs=True,
+        operator_export_type=torch.onnx.OperatorExportTypes.ONNX,
+    )
+    print(f"✓ ONNX export successful: {onnx_path}")
+
+    # Save metadata
+    metadata_path = output_dir / "energy_network_metadata.json"
+    metadata = {
+        'model_type': 'PoseEnergyNet',
+        'checkpoint_path': str(checkpoint_path),
+        'onnx_path': str(onnx_path),
+        'inputs': [
+            {'name': 'pts_feat', 'shape': [1, 1024], 'dtype': 'float32'},
+            {'name': 'sampled_pose', 'shape': [1, 9], 'dtype': 'float32'},
+            {'name': 't', 'shape': [1, 1], 'dtype': 'float32'},
+        ],
+        'outputs': [
+            {'name': 'energy', 'shape': [1], 'dtype': 'float32'},
+        ],
+        'config': {
+            'device': cfg.device,
+            'pose_mode': cfg.pose_mode,
+            'num_points': cfg.num_points,
+            'dino': cfg.dino,
+        }
+    }
+
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    print(f"✓ Metadata saved: {metadata_path}")
+
+    return True
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Export GenPose2 Score Network to ONNX')
+    parser = argparse.ArgumentParser(description='Export GenPose2 Networks to ONNX')
     parser.add_argument('--agent_type', type=str, default='score',
-                        help='Agent type to export (currently only score is supported)')
+                        choices=['score', 'energy'],
+                        help='Agent type to export: score or energy')
     parser.add_argument('--output_dir', type=str, default='./onnx_models',
                         help='Output directory for ONNX models')
     parser.add_argument('--checkpoint_path', type=str, default=None,
@@ -174,48 +284,69 @@ def main():
 
     args = parser.parse_args()
 
-    if args.agent_type != 'score':
-        print(f"\nCurrently only score network export is supported.")
-        print(f"Energy and scale network export will be added later.")
-        return
-
     # Setup config
     sys.argv = [
         'export_onnx.py',
         '--data_path', './data',  # Dummy path, not used for export
         '--device', args.device,
+        '--dino', 'pointwise',  # Enable DINOv2 (must match checkpoint training mode)
     ]
 
     cfg = get_config()
 
-    # Determine checkpoint path
-    checkpoint_path = args.checkpoint_path
-    if checkpoint_path is None:
-        checkpoint_path = getattr(cfg, 'pretrained_score_model_path',
-                                    None) or './results/ckpts/ScoreNet/scorenet.pth'
-        print(f"Auto-detected checkpoint: {checkpoint_path}")
+    # Determine checkpoint path and export function based on agent_type
+    if args.agent_type == 'score':
+        checkpoint_path = args.checkpoint_path
+        if checkpoint_path is None:
+            checkpoint_path = getattr(cfg, 'pretrained_score_model_path',
+                                        None) or './results/ckpts/ScoreNet/scorenet.pth'
+            print(f"Auto-detected checkpoint: {checkpoint_path}")
 
-    # Check if checkpoint exists
-    if not os.path.exists(checkpoint_path):
-        print(f"\nWarning: Checkpoint not found: {checkpoint_path}")
-        print(f"Please specify the correct path with --checkpoint_path")
-        return
+        # Check if checkpoint exists
+        if not os.path.exists(checkpoint_path):
+            print(f"\nWarning: Checkpoint not found: {checkpoint_path}")
+            print(f"Please specify the correct path with --checkpoint_path")
+            return
 
-    # Export
-    success = export_score_network_to_onnx(checkpoint_path, args.output_dir, cfg, args.device)
+        # Export
+        success = export_score_network_to_onnx(checkpoint_path, args.output_dir, cfg, args.device)
+
+        if success:
+            print(f"\n{'='*60}")
+            print("Export completed successfully!")
+            print(f"{'='*60}")
+            print(f"\nExported files:")
+            print(f"  - {args.output_dir}/score_network.onnx")
+            print(f"  - {args.output_dir}/score_network_metadata.json")
+
+    elif args.agent_type == 'energy':
+        checkpoint_path = args.checkpoint_path
+        if checkpoint_path is None:
+            checkpoint_path = getattr(cfg, 'pretrained_energy_model_path',
+                                        None) or './results/ckpts/EnergyNet/energynet.pth'
+            print(f"Auto-detected checkpoint: {checkpoint_path}")
+
+        # Check if checkpoint exists
+        if not os.path.exists(checkpoint_path):
+            print(f"\nWarning: Checkpoint not found: {checkpoint_path}")
+            print(f"Please specify the correct path with --checkpoint_path")
+            return
+
+        # Export
+        success = export_energy_network_to_onnx(checkpoint_path, args.output_dir, cfg, args.device)
+
+        if success:
+            print(f"\n{'='*60}")
+            print("Export completed successfully!")
+            print(f"{'='*60}")
+            print(f"\nExported files:")
+            print(f"  - {args.output_dir}/energy_network.onnx")
+            print(f"  - {args.output_dir}/energy_network_metadata.json")
 
     if success:
-        print(f"\n{'='*60}")
-        print("Export completed successfully!")
-        print(f"{'='*60}")
-        print(f"\nExported files:")
-        print(f"  - {args.output_dir}/score_network.onnx")
-        print(f"  - {args.output_dir}/score_network_metadata.json")
         print(f"\nNext steps:")
         print(f"1. Convert ONNX to OM using ATC tool:")
-        print(f"   atc --framework=5 --model={args.output_dir}/score_network.onnx \\")
-        print(f"       --output={args.output_dir}/score_network.om \\")
-        print(f"       --input_format=NCHW")
+        print(f"   python runners/onnx2om.py --onnx_path {args.output_dir}/{args.agent_type}_network.onnx")
         print(f"\n2. Use the OM model in NPU inference (TODO: implement infer_om.py)")
     else:
         print("\nExport failed. Please check the error messages above.")

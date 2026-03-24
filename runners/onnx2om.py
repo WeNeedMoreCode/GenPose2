@@ -21,7 +21,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 def convert_onnx_to_om(
     onnx_path="./onnx_models/score_network.onnx",
-    output_path="./onnx_models/score_network.om",
+    output_path=None,
     batch_size=1,
     soc_version="Ascend310P"
 ):
@@ -30,18 +30,25 @@ def convert_onnx_to_om(
 
     Args:
         onnx_path: Path to input ONNX model
-        output_path: Path to output OM model
+        output_path: Path to output OM model (auto-detected if not specified)
         batch_size: Batch size for ATC conversion (default: 1)
         soc_version: SoC version (default: Ascend310P)
     """
     onnx_path = Path(onnx_path)
-    output_path = Path(output_path)
+    if output_path is None:
+        output_path = onnx_path.with_suffix('')
+    else:
+        output_path = Path(output_path)
+
+    # Detect model type from filename
+    model_type = 'score' if 'score' in onnx_path.stem else 'energy' if 'energy' in onnx_path.stem else 'unknown'
 
     print("=" * 60)
-    print("GenPose2 Score Network ONNX to OM Conversion")
+    print(f"GenPose2 {model_type.capitalize()} Network ONNX to OM Conversion")
     print("=" * 60)
     print()
     print("Parameters:")
+    print(f"  Model type:     {model_type}")
     print(f"  ONNX model:     {onnx_path}")
     print(f"  OM output:      {output_path}")
     print(f"  Batch size:     {batch_size}")
@@ -53,13 +60,17 @@ def convert_onnx_to_om(
         print(f"Error: ONNX model not found: {onnx_path}")
         print()
         print("Please run export first:")
-        print("  python runners/export_onnx.py --agent_type score --output_dir ./onnx_models")
+        if model_type == 'score':
+            print("  python runners/export_onnx.py --agent_type score --output_dir ./onnx_models")
+        elif model_type == 'energy':
+            print("  python runners/export_onnx.py --agent_type energy --output_dir ./onnx_models")
+        else:
+            print("  python runners/export_onnx.py --agent_type [score|energy] --output_dir ./onnx_models")
         return False
 
     # Check if ATC tool is available
-    try:
-        subprocess.run(["which", "atc"], check=True, capture_output=True)
-    except subprocess.CalledProcessError:
+    atc_check = subprocess.run(["which", "atc"], capture_output=True)
+    if atc_check.returncode != 0:
         print("Error: ATC tool not found!")
         print()
         print("Please source the environment first:")
@@ -72,15 +83,19 @@ def convert_onnx_to_om(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Prepare ATC command
-    # Input shapes (with dynamic batch dimension):
-    #   pts_feat:     [batch_size, 1024]
-    #   rgb_feat:     [batch_size, 384]
-    #   sampled_pose: [batch_size, 9]
-    #   t:            [batch_size, 1]
+    # Input shapes (pointwise mode - rgb_feat already fused in pts_feat):
+    #   score_network:
+    #     pts_feat:     [batch_size, 1024] - contains RGB info
+    #     sampled_pose: [batch_size, 9]
+    #     t:            [batch_size, 1]
+    #   energy_network:
+    #     pts_feat:     [batch_size, 1024] - contains RGB info
+    #     sampled_pose: [batch_size, 9]
+    #     t:            [batch_size, 1]
+    # Both have the same input shapes!
 
     input_shapes = {
         'pts_feat': f"{batch_size},1024",
-        'rgb_feat': f"{batch_size},384",
         'sampled_pose': f"{batch_size},9",
         't': f"{batch_size},1"
     }
@@ -102,54 +117,35 @@ def convert_onnx_to_om(
     print("This may take a few minutes...")
     print()
 
-    try:
-        result = subprocess.run(
-            atc_cmd,
-            check=True,
-            capture_output=True,
-            text=True
-        )
+    result = subprocess.run(atc_cmd, capture_output=True, text=True)
 
-        # ATC doesn't output to stdout normally, check if file was created
-        if output_path.exists():
-            print()
-            print("=" * 60)
-            print("✓ OM conversion successful!")
-            print(f"  Output: {output_path}")
-            print()
-
-            # Get file size
-            file_size = output_path.stat().st_size
-            size_mb = file_size / (1024 * 1024)
-            print(f"  File size: {size_mb:.2f} MB")
-            print()
-            print("Next steps:")
-            print("  1. Use the OM model in NPU inference (TODO: implement infer_om.py)")
-            print("  2. Test with sample data to verify correctness")
-            print("=" * 60)
-            return True
-        else:
-            print()
-            print("=" * 60)
-            print("✗ OM conversion failed!")
-            print("  Output file not created")
-            print()
-            if result.stderr:
-                print("Error output:")
-                print(result.stderr)
-            print("=" * 60)
-            return False
-
-    except subprocess.CalledProcessError as e:
+    # Check if file was created
+    if output_path.exists():
         print()
         print("=" * 60)
-        print("✗ ATC conversion failed!")
-        print(f"  Return code: {e.returncode}")
+        print("✓ OM conversion successful!")
+        print(f"  Output: {output_path}")
         print()
 
-        if e.stderr:
+        # Get file size
+        file_size = output_path.stat().st_size
+        size_mb = file_size / (1024 * 1024)
+        print(f"  File size: {size_mb:.2f} MB")
+        print()
+        print("Next steps:")
+        print("  1. Use the OM model in NPU inference (TODO: implement infer_om.py)")
+        print("  2. Test with sample data to verify correctness")
+        print("=" * 60)
+        return True
+    else:
+        print()
+        print("=" * 60)
+        print("✗ OM conversion failed!")
+        print("  Output file not created")
+        print()
+        if result.stderr:
             print("Error output:")
-            print(e.stderr)
+            print(result.stderr)
         print("=" * 60)
         return False
 
@@ -160,11 +156,11 @@ def main():
     )
     parser.add_argument('--onnx_path', type=str,
                         default='./onnx_models/score_network.onnx',
-                        help='Path to input ONNX model')
+                        help='Path to input ONNX model (score_network.onnx or energy_network.onnx)')
     parser.add_argument('--output', type=str,
                         dest='output_path',
-                        default='./onnx_models/score_network.om',
-                        help='Path to output OM model')
+                        default=None,
+                        help='Path to output OM model (auto-detected from onnx_path if not specified)')
     parser.add_argument('--batch_size', type=int, default=1,
                         help='Batch size for ATC conversion (default: 1)')
     parser.add_argument('--soc_version', type=str, default='Ascend310P',
