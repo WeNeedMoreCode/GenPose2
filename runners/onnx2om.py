@@ -41,7 +41,14 @@ def convert_onnx_to_om(
         output_path = Path(output_path)
 
     # Detect model type from filename
-    model_type = 'score' if 'score' in onnx_path.stem else 'energy' if 'energy' in onnx_path.stem else 'unknown'
+    if 'score' in onnx_path.stem:
+        model_type = 'score'
+    elif 'energy' in onnx_path.stem:
+        model_type = 'energy'
+    elif 'scale' in onnx_path.stem:
+        model_type = 'scale'
+    else:
+        model_type = 'unknown'
 
     print("=" * 60)
     print(f"GenPose2 {model_type.capitalize()} Network ONNX to OM Conversion")
@@ -64,8 +71,10 @@ def convert_onnx_to_om(
             print("  python runners/export_onnx.py --agent_type score --output_dir ./onnx_models")
         elif model_type == 'energy':
             print("  python runners/export_onnx.py --agent_type energy --output_dir ./onnx_models")
+        elif model_type == 'scale':
+            print("  python runners/export_onnx.py --agent_type scale --output_dir ./onnx_models")
         else:
-            print("  python runners/export_onnx.py --agent_type [score|energy] --output_dir ./onnx_models")
+            print("  python runners/export_onnx.py --agent_type [score|energy|scale] --output_dir ./onnx_models")
         return False
 
     # Check if ATC tool is available
@@ -92,13 +101,25 @@ def convert_onnx_to_om(
     #     pts_feat:     [batch_size, 1024] - contains RGB info
     #     sampled_pose: [batch_size, 9]
     #     t:            [batch_size, 1]
-    # Both have the same input shapes!
+    #   scale_network:
+    #     pts_feat:     [batch_size, 1024] - contains RGB info
+    #     axes:         [batch_size, 3, 3] - rotation matrices
 
-    input_shapes = {
-        'pts_feat': f"{batch_size},1024",
-        'sampled_pose': f"{batch_size},9",
-        't': f"{batch_size},1"
-    }
+    # Set input shapes based on model type
+    if model_type in ['score', 'energy']:
+        input_shapes = {
+            'pts_feat': f"{batch_size},1024",
+            'sampled_pose': f"{batch_size},9",
+            't': f"{batch_size},1"
+        }
+    elif model_type == 'scale':
+        input_shapes = {
+            'pts_feat': f"{batch_size},1024",
+            'axes': f"{batch_size},3,3"
+        }
+    else:
+        print(f"Error: Unknown model type '{model_type}'")
+        return False
     input_shape_str = ";".join([f"{k}:{v}" for k, v in input_shapes.items()])
 
     atc_cmd = [

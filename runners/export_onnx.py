@@ -23,6 +23,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from configs.config import get_config
 from networks.score_wrapper import create_score_network
 from networks.posenet_agent import PoseNet
+from networks.scalenet import ScaleNet
 
 
 def get_score_network_input_info(cfg):
@@ -275,11 +276,112 @@ def export_energy_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu'
     return True
 
 
+def export_scale_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu'):
+    """
+    Export Scale Network to ONNX format.
+
+    Args:
+        checkpoint_path: Path to PyTorch checkpoint
+        output_dir: Directory to save ONNX model and metadata
+        cfg: Configuration object
+        device: Device to load model on
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n{'='*60}")
+    print(f"Exporting Scale Network to ONNX")
+    print(f"{'='*60}")
+
+    # Load PoseNet with scale checkpoint
+    print(f"\nLoading Scale Network...")
+    print(f"  Checkpoint: {checkpoint_path}")
+    print(f"  Device: {device}")
+
+    scale_cfg = get_config()
+    scale_cfg.agent_type = 'scale'
+    scale_cfg.device = device
+    scale_cfg.dino = 'pointwise'
+
+    agent = PoseNet(scale_cfg)
+    agent.load_ckpt(model_dir=checkpoint_path, model_path=True, load_model_only=True)
+    net = agent.net
+    net.eval()
+
+    # Input info
+    print(f"\nInput info:")
+    print(f"  pts_feat: [1, 1024], float32")
+    print(f"  axes: [1, 3, 3], float32")
+
+    print(f"\nOutput info:")
+    print(f"  length: [1, 3], float32")
+
+    # Prepare dummy inputs
+    pts_feat = torch.randn(1, 1024, dtype=torch.float32)
+    axes = torch.randn(1, 3, 3, dtype=torch.float32)
+
+    # Export to ONNX
+    onnx_path = output_dir / "scale_network.onnx"
+    print(f"\nExporting to {onnx_path}...")
+
+    dummy_data = {
+        'pts_feat': pts_feat,
+        'axes': axes
+    }
+
+    torch.onnx.export(
+        net,
+        dummy_data,
+        str(onnx_path),
+        input_names=['pts_feat', 'axes'],
+        output_names=['length'],
+        dynamic_axes={
+            'pts_feat': {0: 'batch_size'},
+            'axes': {0: 'batch_size'},
+            'length': {0: 'batch_size'},
+        },
+        opset_version=17,
+        verbose=False,
+        export_params=True,
+        do_constant_folding=False,
+        keep_initializers_as_inputs=True,
+        operator_export_type=torch.onnx.OperatorExportTypes.ONNX,
+    )
+    print(f"✓ ONNX export successful: {onnx_path}")
+
+    # Save metadata
+    metadata_path = output_dir / "scale_network_metadata.json"
+    metadata = {
+        'model_type': 'ScaleNet',
+        'checkpoint_path': str(checkpoint_path),
+        'onnx_path': str(onnx_path),
+        'inputs': [
+            {'name': 'pts_feat', 'shape': [1, 1024], 'dtype': 'float32'},
+            {'name': 'axes', 'shape': [1, 3, 3], 'dtype': 'float32'},
+        ],
+        'outputs': [
+            {'name': 'length', 'shape': [1, 3], 'dtype': 'float32'},
+        ],
+        'config': {
+            'device': cfg.device,
+            'pose_mode': cfg.pose_mode,
+            'num_points': cfg.num_points,
+            'dino': cfg.dino,
+        }
+    }
+
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    print(f"✓ Metadata saved: {metadata_path}")
+
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description='Export GenPose2 Networks to ONNX')
     parser.add_argument('--agent_type', type=str, default='score',
-                        choices=['score', 'energy'],
-                        help='Agent type to export: score or energy')
+                        choices=['score', 'energy', 'scale'],
+                        help='Agent type to export: score, energy, or scale')
     parser.add_argument('--output_dir', type=str, default='./onnx_models',
                         help='Output directory for ONNX models')
     parser.add_argument('--checkpoint_path', type=str, default=None,
@@ -346,6 +448,30 @@ def main():
             print(f"\nExported files:")
             print(f"  - {args.output_dir}/energy_network.onnx")
             print(f"  - {args.output_dir}/energy_network_metadata.json")
+
+    elif args.agent_type == 'scale':
+        checkpoint_path = args.checkpoint_path
+        if checkpoint_path is None:
+            checkpoint_path = getattr(cfg, 'pretrained_scale_model_path',
+                                        None) or './results/ckpts/ScaleNet/scalenet.pth'
+            print(f"Auto-detected checkpoint: {checkpoint_path}")
+
+        # Check if checkpoint exists
+        if not os.path.exists(checkpoint_path):
+            print(f"\nWarning: Checkpoint not found: {checkpoint_path}")
+            print(f"Please specify the correct path with --checkpoint_path")
+            return
+
+        # Export
+        success = export_scale_network_to_onnx(checkpoint_path, args.output_dir, cfg, args.device)
+
+        if success:
+            print(f"\n{'='*60}")
+            print("Export completed successfully!")
+            print(f"{'='*60}")
+            print(f"\nExported files:")
+            print(f"  - {args.output_dir}/scale_network.onnx")
+            print(f"  - {args.output_dir}/scale_network_metadata.json")
 
     if success:
         print(f"\nNext steps:")
