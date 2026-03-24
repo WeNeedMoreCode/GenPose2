@@ -324,14 +324,20 @@ def export_scale_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu')
     onnx_path = output_dir / "scale_network.onnx"
     print(f"\nExporting to {onnx_path}...")
 
-    dummy_data = {
-        'pts_feat': pts_feat,
-        'axes': axes
-    }
+    # Wrapper: convert positional args to dict for ScaleNet
+    class ScaleExportWrapper(nn.Module):
+        def __init__(self, net):
+            super().__init__()
+            self.net = net
+        def forward(self, pts_feat, axes):
+            data = {'pts_feat': pts_feat, 'axes': axes}
+            return self.net(data)
+
+    scale_net = ScaleExportWrapper(net)
 
     torch.onnx.export(
-        net,
-        dummy_data,
+        scale_net,
+        (pts_feat, axes),
         str(onnx_path),
         input_names=['pts_feat', 'axes'],
         output_names=['length'],

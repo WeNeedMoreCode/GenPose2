@@ -139,7 +139,7 @@ def convert_onnx_to_om(
     print()
 
     result = subprocess.run(atc_cmd, capture_output=True, text=True)
-    output_path = Path(output_dir) / f".om"
+    output_path = Path(output_path) / f".om"
     # Check if file was created
     if output_path.exists():
         print()

@@ -6,8 +6,13 @@ outside of the integrated ODE sampler, enabling:
 1. ONNX export of Score Network only
 2. External ODE sampling implementation (PyTorch or C++)
 3. Call Score Network as a standalone function
+4. Support for both PyTorch (.pth) and OM (.om) models
 """
 
+import json
+from pathlib import Path
+
+import numpy as np
 import torch
 import torch.nn as nn
 from configs.config import get_config
@@ -22,15 +27,16 @@ class ScoreNetworkWrapper(nn.Module):
     - Exported to ONNX independently
     - Called from external ODE sampling loops
     - Used with different sampling strategies
+    - Loaded from either PyTorch (.pth) or OM (.om) models
 
     Input:
         pts_feat: [batch_size, 1024] - Point cloud features
-        rgb_feat: [batch_size, 384] - RGB features (DINOv2)
-        sampled_pose: [batch_size, 7] - Current pose estimate
+        rgb_feat: [batch_size, 384] - RGB features (DINOv2) - only for PyTorch model
+        sampled_pose: [batch_size, 9] - Current pose estimate
         t: [batch_size, 1] - Timestep
 
     Output:
-        score: [batch_size, 7] - Score/gradient for the given pose
+        score: [batch_size, 9] - Score/gradient for the given pose
     """
 
     def __init__(self, checkpoint_path, device='npu:0'):
@@ -38,21 +44,32 @@ class ScoreNetworkWrapper(nn.Module):
         Initialize ScoreNetworkWrapper with a trained checkpoint.
 
         Args:
-            checkpoint_path: Path to ScoreNet checkpoint
+            checkpoint_path: Path to ScoreNet checkpoint (.pth or .om)
             device: Device to load model on
         """
         super().__init__()
 
+        self.checkpoint_path = Path(checkpoint_path)
+        self.device = device
+        self.is_om = self.checkpoint_path.suffix.lower() == '.om'
+
+        if self.is_om:
+            self._load_om_model()
+        else:
+            self._load_pytorch_model()
+
+    def _load_pytorch_model(self):
+        """Load PyTorch model from .pth checkpoint."""
         # Load config and model
         cfg = get_config()
         cfg.agent_type = 'score'
-        cfg.device = device
+        cfg.device = self.device
         cfg.dino = 'pointwise'  # Enable DINOv2 (must match checkpoint training mode)
 
         # Load ScoreNet
         self.score_agent = PoseNet(cfg)
         self.score_agent.load_ckpt(
-            model_dir=checkpoint_path,
+            model_dir=str(self.checkpoint_path),
             model_path=True,
             load_model_only=True
         )
@@ -67,32 +84,92 @@ class ScoreNetworkWrapper(nn.Module):
         for param in self.parameters():
             param.requires_grad_(False)
 
+    def _load_om_model(self):
+        """Load OM model using ais_bench InferSession."""
+        try:
+            from ais_bench.infer.interface import InferSession
+        except ImportError:
+            raise ImportError(
+                "OM model requires 'ais_bench' package. "
+                "Install with: pip install ais_bench"
+            )
+
+        # Determine device ID
+        if isinstance(self.device, str) and 'npu:' in self.device:
+            device_id = int(self.device.split(':')[1])
+        else:
+            device_id = 0
+
+        # Load metadata
+        metadata_path = self.checkpoint_path.with_suffix('_metadata.json')
+        if not metadata_path.exists():
+            metadata_path = self.checkpoint_path.parent / 'score_network_metadata.json'
+
+        if metadata_path.exists():
+            with open(metadata_path, 'r') as f:
+                self.metadata = json.load(f)
+            print(f"✓ Loaded metadata from: {metadata_path}")
+        else:
+            print(f"Warning: Metadata not found, using defaults")
+            self.metadata = None
+
+        # Load OM model
+        print(f"Loading OM model: {self.checkpoint_path}")
+        self.om_session = InferSession(device_id, str(self.checkpoint_path))
+        print(f"✓ OM model loaded successfully")
+
+        # Store dummy cfg for compatibility
+        self.cfg = get_config()
+        self.cfg.pose_mode = 'rot_matrix'
+
     def forward(self, pts_feat, rgb_feat, sampled_pose, t):
         """
         Forward pass of Score Network.
 
         Args:
             pts_feat: [batch_size, 1024] - Point cloud features from PointNet2
-            rgb_feat: [batch_size, 384] - RGB features from DINOv2 (or None)
-            sampled_pose: [batch_size, 7] - Current pose estimate
+            rgb_feat: [batch_size, 384] - RGB features from DINOv2 (ignored for OM models)
+            sampled_pose: [batch_size, 9] - Current pose estimate
             t: [batch_size, 1] - Diffusion timestep
 
         Returns:
-            score: [batch_size, 7] - Score/gradient for the given pose
+            score: [batch_size, 9] - Score/gradient for the given pose
         """
-        # Prepare data dict (matching PoseScoreNet.forward format)
-        data = {
-            'pts_feat': pts_feat,
-            'rgb_feat': rgb_feat,
-            'sampled_pose': sampled_pose,
-            't': t
-        }
+        if self.is_om:
+            # OM model inference
+            # Convert torch tensors to numpy
+            inputs = [
+                pts_feat.cpu().numpy().astype(np.float32),
+                sampled_pose.cpu().numpy().astype(np.float32),
+                t.cpu().numpy().astype(np.float32)
+            ]
 
-        # Call score network
-        with torch.no_grad():
-            score = self.pose_score_net(data)
+            # Run OM inference
+            outputs = self.om_session.infer(inputs)
 
-        return score
+            # Convert back to torch tensor
+            if isinstance(outputs, (list, tuple)) and len(outputs) == 1:
+                score = torch.from_numpy(outputs[0])
+            else:
+                score = torch.from_numpy(outputs)
+
+            return score.to(self.device)
+
+        else:
+            # PyTorch model inference
+            # Prepare data dict (matching PoseScoreNet.forward format)
+            data = {
+                'pts_feat': pts_feat,
+                'rgb_feat': rgb_feat,
+                'sampled_pose': sampled_pose,
+                't': t
+            }
+
+            # Call score network
+            with torch.no_grad():
+                score = self.pose_score_net(data)
+
+            return score
 
     def get_score(self, data):
         """
