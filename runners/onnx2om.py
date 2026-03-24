@@ -41,7 +41,9 @@ def convert_onnx_to_om(
         output_path = Path(output_path)
 
     # Detect model type from filename
-    if 'score' in onnx_path.stem:
+    if 'pointnet2_scorenet' in onnx_path.stem:
+        model_type = 'pointnet2_scorenet'
+    elif 'score' in onnx_path.stem:
         model_type = 'score'
     elif 'energy' in onnx_path.stem:
         model_type = 'energy'
@@ -92,8 +94,13 @@ def convert_onnx_to_om(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Prepare ATC command
-    # Input shapes (pointwise mode - rgb_feat already fused in pts_feat):
-    #   score_network:
+    # Input shapes:
+    #   pointnet2_scorenet:
+    #     pts:          [batch_size, 1024, 3] - raw point cloud
+    #     rgb_feat:     [batch_size, 1024, 384] - DINOv2 features
+    #     sampled_pose: [batch_size, 9]
+    #     t:            [batch_size, 1]
+    #   score_network (pointwise mode - rgb_feat already fused in pts_feat):
     #     pts_feat:     [batch_size, 1024] - contains RGB info
     #     sampled_pose: [batch_size, 9]
     #     t:            [batch_size, 1]
@@ -106,7 +113,14 @@ def convert_onnx_to_om(
     #     axes:         [batch_size, 3, 3] - rotation matrices
 
     # Set input shapes based on model type
-    if model_type in ['score', 'energy']:
+    if model_type == 'pointnet2_scorenet':
+        input_shapes = {
+            'pts': f"{batch_size},1024,3",
+            'rgb_feat': f"{batch_size},1024,384",
+            'sampled_pose': f"{batch_size},9",
+            't': f"{batch_size},1"
+        }
+    elif model_type in ['score', 'energy']:
         input_shapes = {
             'pts_feat': f"{batch_size},1024",
             'sampled_pose': f"{batch_size},9",

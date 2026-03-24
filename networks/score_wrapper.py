@@ -24,14 +24,20 @@ class ScoreNetworkWrapper(nn.Module):
     Wrapper for PoseNet that exposes only the Score Network forward pass.
 
     This allows the Score Network to be:
-    - Exported to ONNX independently
+    - Exported to ONNX independently (ScoreNet only)
     - Called from external ODE sampling loops
     - Used with different sampling strategies
     - Loaded from either PyTorch (.pth) or OM (.om) models
 
-    Input:
-        pts_feat: [batch_size, 1024] - Point cloud features
-        rgb_feat: [batch_size, 384] - RGB features (DINOv2) - only for PyTorch model
+    PyTorch Mode Input:
+        pts_feat: [batch_size, 1024] - Point cloud features from PointNet2
+        rgb_feat: [batch_size, 384] - RGB features from DINOv2
+        sampled_pose: [batch_size, 9] - Current pose estimate
+        t: [batch_size, 1] - Timestep
+
+    OM Mode Input (end-to-end with PointNet2):
+        pts: [batch_size, 1024, 3] - Raw point cloud
+        rgb_feat: [batch_size, 1024, 384] - DINOv2 features
         sampled_pose: [batch_size, 9] - Current pose estimate
         t: [batch_size, 1] - Timestep
 
@@ -77,7 +83,8 @@ class ScoreNetworkWrapper(nn.Module):
 
         # Store references
         self.net = self.score_agent.net
-        self.pose_score_net = self.net.pose_score_net
+        self.pts_encoder = self.net.pts_encoder  # PointNet2
+        self.pose_score_net = self.net.pose_score_net  # ScoreNet
         self.cfg = cfg
 
         # Freeze parameters
@@ -85,7 +92,12 @@ class ScoreNetworkWrapper(nn.Module):
             param.requires_grad_(False)
 
     def _load_om_model(self):
-        """Load OM model using ais_bench InferSession."""
+        """Load OM model using ais_bench InferSession.
+
+        Note: OM model should contain PointNet2 + ScoreNet end-to-end.
+        Input: pts, rgb_feat, sampled_pose, t
+        Output: score
+        """
         try:
             from ais_bench.infer.interface import InferSession
         except ImportError:
@@ -126,20 +138,30 @@ class ScoreNetworkWrapper(nn.Module):
         """
         Forward pass of Score Network.
 
-        Args:
-            pts_feat: [batch_size, 1024] - Point cloud features from PointNet2
-            rgb_feat: [batch_size, 384] - RGB features from DINOv2 (ignored for OM models)
-            sampled_pose: [batch_size, 9] - Current pose estimate
-            t: [batch_size, 1] - Diffusion timestep
+        PyTorch Mode:
+            Args:
+                pts_feat: [batch_size, 1024] - Point cloud features from PointNet2
+                rgb_feat: [batch_size, 384] - RGB features from DINOv2
+                sampled_pose: [batch_size, 9] - Current pose estimate
+                t: [batch_size, 1] - Diffusion timestep
+            Returns:
+                score: [batch_size, 9]
 
-        Returns:
-            score: [batch_size, 9] - Score/gradient for the given pose
+        OM Mode (end-to-end):
+            Args:
+                pts_feat: [batch_size, 1024, 3] - Raw point cloud
+                rgb_feat: [batch_size, 1024, 384] - DINOv2 features
+                sampled_pose: [batch_size, 9] - Current pose estimate
+                t: [batch_size, 1] - Diffusion timestep
+            Returns:
+                score: [batch_size, 9]
         """
         if self.is_om:
-            # OM model inference
+            # OM model inference (end-to-end: PointNet2 + ScoreNet)
             # Convert torch tensors to numpy
             inputs = [
-                pts_feat.cpu().numpy().astype(np.float32),
+                pts_feat.cpu().numpy().astype(np.float32),  # Actually raw pts
+                rgb_feat.cpu().numpy().astype(np.float32),
                 sampled_pose.cpu().numpy().astype(np.float32),
                 t.cpu().numpy().astype(np.float32)
             ]
@@ -156,7 +178,7 @@ class ScoreNetworkWrapper(nn.Module):
             return score.to(self.device)
 
         else:
-            # PyTorch model inference
+            # PyTorch model inference (ScoreNet only, pts_feat already extracted)
             # Prepare data dict (matching PoseScoreNet.forward format)
             data = {
                 'pts_feat': pts_feat,

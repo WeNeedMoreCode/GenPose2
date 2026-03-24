@@ -383,11 +383,140 @@ def export_scale_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu')
     return True
 
 
+def export_pointnet2_scorenet_to_onnx(checkpoint_path, output_dir, cfg, device='cpu'):
+    """
+    Export PointNet2 + ScoreNet to ONNX format.
+
+    This exports the complete pipeline for NPU acceleration:
+        pts[bs,1024,3] + rgb_feat[bs,1024,384] → PointNet2 → ScoreNet → score[bs,9]
+
+    Args:
+        checkpoint_path: Path to PyTorch checkpoint
+        output_dir: Directory to save ONNX model and metadata
+        cfg: Configuration object
+        device: Device to load model on
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n{'='*60}")
+    print(f"Exporting PointNet2 + ScoreNet to ONNX")
+    print(f"{'='*60}")
+
+    # Load PoseNet with score checkpoint
+    print(f"\nLoading PoseNet (PointNet2 + ScoreNet)...")
+    print(f"  Checkpoint: {checkpoint_path}")
+    print(f"  Device: {device}")
+
+    score_cfg = get_config()
+    score_cfg.agent_type = 'score'
+    score_cfg.device = device
+    score_cfg.dino = 'pointwise'
+
+    agent = PoseNet(score_cfg)
+    agent.load_ckpt(model_dir=checkpoint_path, model_path=True, load_model_only=True)
+    net = agent.net
+    net.eval()
+
+    # Input info
+    print(f"\nInput info:")
+    print(f"  pts: [1, 1024, 3], float32 - Raw point cloud")
+    print(f"  rgb_feat: [1, 1024, 384], float32 - DINOv2 features")
+    print(f"  sampled_pose: [1, 9], float32")
+    print(f"  t: [1, 1], float32")
+
+    print(f"\nOutput info:")
+    print(f"  score: [1, 9], float32")
+
+    # Prepare dummy inputs
+    pts = torch.randn(1, 1024, 3, dtype=torch.float32)
+    rgb_feat = torch.randn(1, 1024, 384, dtype=torch.float32)
+    sampled_pose = torch.randn(1, 9, dtype=torch.float32)
+    t = torch.randn(1, 1, dtype=torch.float32)
+
+    # Export to ONNX
+    onnx_path = output_dir / "pointnet2_scorenet.onnx"
+    print(f"\nExporting to {onnx_path}...")
+
+    # Wrapper: PointNet2 + ScoreNet
+    class PointNet2ScoreNetExportWrapper(nn.Module):
+        def __init__(self, pts_encoder, pose_score_net):
+            super().__init__()
+            self.pts_encoder = pts_encoder
+            self.pose_score_net = pose_score_net
+        def forward(self, pts, rgb_feat, sampled_pose, t):
+            # Concatenate pts + rgb_feat (pointwise mode)
+            pts_with_rgb = torch.cat([pts, rgb_feat], dim=-1)  # [bs, 1024, 387]
+            # PointNet2 encoding
+            pts_feat = self.pts_encoder(pts_with_rgb)  # [bs, 1024]
+            # ScoreNet forward
+            data = {
+                'pts_feat': pts_feat,
+                'rgb_feat': None,  # pointwise mode: already fused in pts_feat
+                'sampled_pose': sampled_pose,
+                't': t
+            }
+            return self.pose_score_net(data)
+
+    pn2s_net = PointNet2ScoreNetExportWrapper(net.pts_encoder, net.pose_score_net)
+
+    torch.onnx.export(
+        pn2s_net,
+        (pts, rgb_feat, sampled_pose, t),
+        str(onnx_path),
+        input_names=['pts', 'rgb_feat', 'sampled_pose', 't'],
+        output_names=['score'],
+        dynamic_axes={
+            'pts': {0: 'batch_size'},
+            'rgb_feat': {0: 'batch_size'},
+            'sampled_pose': {0: 'batch_size'},
+            't': {0: 'batch_size'},
+            'score': {0: 'batch_size'},
+        },
+        opset_version=17,
+        verbose=False,
+        export_params=True,
+        do_constant_folding=False,
+        keep_initializers_as_inputs=True,
+        operator_export_type=torch.onnx.OperatorExportTypes.ONNX,
+    )
+    print(f"✓ ONNX export successful: {onnx_path}")
+
+    # Save metadata
+    metadata_path = output_dir / "pointnet2_scorenet_metadata.json"
+    metadata = {
+        'model_type': 'PointNet2+ScoreNet',
+        'checkpoint_path': str(checkpoint_path),
+        'onnx_path': str(onnx_path),
+        'inputs': [
+            {'name': 'pts', 'shape': [1, 1024, 3], 'dtype': 'float32'},
+            {'name': 'rgb_feat', 'shape': [1, 1024, 384], 'dtype': 'float32'},
+            {'name': 'sampled_pose', 'shape': [1, 9], 'dtype': 'float32'},
+            {'name': 't', 'shape': [1, 1], 'dtype': 'float32'},
+        ],
+        'outputs': [
+            {'name': 'score', 'shape': [1, 9], 'dtype': 'float32'},
+        ],
+        'config': {
+            'device': cfg.device,
+            'pose_mode': cfg.pose_mode,
+            'num_points': cfg.num_points,
+            'dino': cfg.dino,
+        }
+    }
+
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    print(f"✓ Metadata saved: {metadata_path}")
+
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description='Export GenPose2 Networks to ONNX')
     parser.add_argument('--agent_type', type=str, default='score',
-                        choices=['score', 'energy', 'scale'],
-                        help='Agent type to export: score, energy, or scale')
+                        choices=['score', 'energy', 'scale', 'pointnet2_scorenet'],
+                        help='Agent type to export: score, energy, scale, or pointnet2_scorenet')
     parser.add_argument('--output_dir', type=str, default='./onnx_models',
                         help='Output directory for ONNX models')
     parser.add_argument('--checkpoint_path', type=str, default=None,
@@ -478,6 +607,30 @@ def main():
             print(f"\nExported files:")
             print(f"  - {args.output_dir}/scale_network.onnx")
             print(f"  - {args.output_dir}/scale_network_metadata.json")
+
+    elif args.agent_type == 'pointnet2_scorenet':
+        checkpoint_path = args.checkpoint_path
+        if checkpoint_path is None:
+            checkpoint_path = getattr(cfg, 'pretrained_score_model_path',
+                                        None) or './results/ckpts/ScoreNet/scorenet.pth'
+            print(f"Auto-detected checkpoint: {checkpoint_path}")
+
+        # Check if checkpoint exists
+        if not os.path.exists(checkpoint_path):
+            print(f"\nWarning: Checkpoint not found: {checkpoint_path}")
+            print(f"Please specify the correct path with --checkpoint_path")
+            return
+
+        # Export
+        success = export_pointnet2_scorenet_to_onnx(checkpoint_path, args.output_dir, cfg, args.device)
+
+        if success:
+            print(f"\n{'='*60}")
+            print("Export completed successfully!")
+            print(f"{'='*60}")
+            print(f"\nExported files:")
+            print(f"  - {args.output_dir}/pointnet2_scorenet.onnx")
+            print(f"  - {args.output_dir}/pointnet2_scorenet_metadata.json")
 
     if success:
         print(f"\nNext steps:")
