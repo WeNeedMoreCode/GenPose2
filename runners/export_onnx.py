@@ -383,7 +383,7 @@ def export_scale_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu')
     return True
 
 
-def export_pointnet2_scorenet_to_onnx(checkpoint_path, output_dir, cfg, device='cpu'):
+def export_pointnet2_scorenet_to_onnx(checkpoint_path, output_dir, cfg, device='cpu', om_batch_size=1):
     """
     Export PointNet2 + ScoreNet to ONNX format.
 
@@ -395,6 +395,8 @@ def export_pointnet2_scorenet_to_onnx(checkpoint_path, output_dir, cfg, device='
         output_dir: Directory to save ONNX model and metadata
         cfg: Configuration object
         device: Device to load model on
+        om_batch_size: Fixed batch size for OM model (typically batch_size * eval_repeat_num)
+                     Example: if batch_size=16, eval_repeat_num=50, use om_batch_size=800
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -402,6 +404,7 @@ def export_pointnet2_scorenet_to_onnx(checkpoint_path, output_dir, cfg, device='
     print(f"\n{'='*60}")
     print(f"Exporting PointNet2 + ScoreNet to ONNX")
     print(f"{'='*60}")
+    print(f"OM Batch Size: {om_batch_size} (fixed, not dynamic)")
 
     # Load PoseNet with score checkpoint
     print(f"\nLoading PoseNet (PointNet2 + ScoreNet)...")
@@ -420,19 +423,19 @@ def export_pointnet2_scorenet_to_onnx(checkpoint_path, output_dir, cfg, device='
 
     # Input info
     print(f"\nInput info:")
-    print(f"  pts: [1, 1024, 3], float32 - Raw point cloud")
-    print(f"  rgb_feat: [1, 1024, 384], float32 - DINOv2 features")
-    print(f"  sampled_pose: [1, 9], float32")
-    print(f"  t: [1, 1], float32")
+    print(f"  pts: [{om_batch_size}, 1024, 3], float32 - Raw point cloud")
+    print(f"  rgb_feat: [{om_batch_size}, 1024, 384], float32 - DINOv2 features")
+    print(f"  sampled_pose: [{om_batch_size}, 9], float32")
+    print(f"  t: [{om_batch_size}, 1], float32")
 
     print(f"\nOutput info:")
-    print(f"  score: [1, 9], float32")
+    print(f"  score: [{om_batch_size}, 9], float32")
 
     # Prepare dummy inputs
-    pts = torch.randn(1, 1024, 3, dtype=torch.float32)
-    rgb_feat = torch.randn(1, 1024, 384, dtype=torch.float32)
-    sampled_pose = torch.randn(1, 9, dtype=torch.float32)
-    t = torch.randn(1, 1, dtype=torch.float32)
+    pts = torch.randn(om_batch_size, 1024, 3, dtype=torch.float32)
+    rgb_feat = torch.randn(om_batch_size, 1024, 384, dtype=torch.float32)
+    sampled_pose = torch.randn(om_batch_size, 9, dtype=torch.float32)
+    t = torch.randn(om_batch_size, 1, dtype=torch.float32)
 
     # Export to ONNX
     onnx_path = output_dir / "pointnet2_scorenet.onnx"
@@ -489,19 +492,20 @@ def export_pointnet2_scorenet_to_onnx(checkpoint_path, output_dir, cfg, device='
         'checkpoint_path': str(checkpoint_path),
         'onnx_path': str(onnx_path),
         'inputs': [
-            {'name': 'pts', 'shape': [1, 1024, 3], 'dtype': 'float32'},
-            {'name': 'rgb_feat', 'shape': [1, 1024, 384], 'dtype': 'float32'},
-            {'name': 'sampled_pose', 'shape': [1, 9], 'dtype': 'float32'},
-            {'name': 't', 'shape': [1, 1], 'dtype': 'float32'},
+            {'name': 'pts', 'shape': [om_batch_size, 1024, 3], 'dtype': 'float32'},
+            {'name': 'rgb_feat', 'shape': [om_batch_size, 1024, 384], 'dtype': 'float32'},
+            {'name': 'sampled_pose', 'shape': [om_batch_size, 9], 'dtype': 'float32'},
+            {'name': 't', 'shape': [om_batch_size, 1], 'dtype': 'float32'},
         ],
         'outputs': [
-            {'name': 'score', 'shape': [1, 9], 'dtype': 'float32'},
+            {'name': 'score', 'shape': [om_batch_size, 9], 'dtype': 'float32'},
         ],
         'config': {
             'device': cfg.device,
             'pose_mode': cfg.pose_mode,
             'num_points': cfg.num_points,
             'dino': cfg.dino,
+            'om_batch_size': om_batch_size,  # Save OM batch size for reference
         }
     }
 
@@ -523,6 +527,10 @@ def main():
                         help='Path to checkpoint (auto-detected if not specified)')
     parser.add_argument('--device', type=str, default='cpu',
                         help='Device to use for export (default: cpu)')
+    parser.add_argument('--om_batch_size', type=int, default=1,
+                        help='Fixed batch size for OM model (for pointnet2_scorenet only). '
+                             'Should typically be batch_size * eval_repeat_num (e.g., 16*50=800). '
+                             'For best performance, match this to your inference configuration.')
 
     args = parser.parse_args()
 
@@ -622,7 +630,9 @@ def main():
             return
 
         # Export
-        success = export_pointnet2_scorenet_to_onnx(checkpoint_path, args.output_dir, cfg, args.device)
+        success = export_pointnet2_scorenet_to_onnx(
+            checkpoint_path, args.output_dir, cfg, args.device, args.om_batch_size
+        )
 
         if success:
             print(f"\n{'='*60}")

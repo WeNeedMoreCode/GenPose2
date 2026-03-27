@@ -22,7 +22,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 def convert_onnx_to_om(
     onnx_path="./onnx_models/score_network.onnx",
     output_path=None,
-    batch_size=1,
+    batch_size=None,  # None = auto-detect from metadata
     soc_version="Ascend310P3"
 ):
     """
@@ -31,7 +31,7 @@ def convert_onnx_to_om(
     Args:
         onnx_path: Path to input ONNX model
         output_path: Path to output OM model (auto-detected if not specified)
-        batch_size: Batch size for ATC conversion (default: 1)
+        batch_size: Batch size for ATC conversion (None = auto-detect from metadata)
         soc_version: SoC version (default: Ascend310P)
     """
     onnx_path = Path(onnx_path)
@@ -39,6 +39,30 @@ def convert_onnx_to_om(
         output_path = onnx_path.with_suffix('')
     else:
         output_path = Path(output_path)
+
+    # Auto-detect batch_size from metadata
+    metadata_path = onnx_path.parent / f"{onnx_path.stem}_metadata.json"
+    detected_batch_size = None
+
+    if metadata_path.exists():
+        import json
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+        detected_batch_size = metadata.get('config', {}).get('om_batch_size', None)
+
+    # Determine batch size to use
+    if batch_size is None:
+        if detected_batch_size is not None:
+            batch_size = detected_batch_size
+            print(f"Auto-detected batch_size from metadata: {batch_size}")
+        else:
+            batch_size = 1
+            print(f"No batch_size found in metadata, using default: {batch_size}")
+    else:
+        # User specified batch_size explicitly
+        if detected_batch_size is not None and batch_size != detected_batch_size:
+            print(f"Warning: Specified batch_size ({batch_size}) differs from metadata ({detected_batch_size})")
+        print(f"Using specified batch_size: {batch_size}")
 
     # Detect model type from filename
     if 'pointnet2_scorenet' in onnx_path.stem:
@@ -153,17 +177,18 @@ def convert_onnx_to_om(
     print()
 
     result = subprocess.run(atc_cmd, capture_output=True, text=True)
-    output_path = Path(output_path) / f".om"
+    # ATC creates output file with .om extension
+    output_file = Path(str(output_path) + ".om")
     # Check if file was created
-    if output_path.exists():
+    if output_file.exists():
         print()
         print("=" * 60)
         print("✓ OM conversion successful!")
-        print(f"  Output: {output_path}")
+        print(f"  Output: {output_file}")
         print()
 
         # Get file size
-        file_size = output_path.stat().st_size
+        file_size = output_file.stat().st_size
         size_mb = file_size / (1024 * 1024)
         print(f"  File size: {size_mb:.2f} MB")
         print()
@@ -198,8 +223,8 @@ def main():
                         dest='output_path',
                         default=None,
                         help='Path to output OM model (auto-detected from onnx_path if not specified)')
-    parser.add_argument('--batch_size', type=int, default=1,
-                        help='Batch size for ATC conversion (default: 1)')
+    parser.add_argument('--batch_size', type=int, default=None,
+                        help='Batch size for ATC conversion (default: auto-detect from metadata)')
     parser.add_argument('--soc_version', type=str, default='Ascend310P3',
                         help='SoC version (default: Ascend310P3)')
 

@@ -464,6 +464,9 @@ def _ode_sample_end_to_end(score_net, pts, rgb_feat, init_x, prior_fn, sde_fn,
     This is similar to ODESamplerExternal.sample(), but calls the end-to-end
     OM model with raw pts and rgb_feat in each iteration.
 
+    NOTE: OM model has fixed batch size, so we need to split the batch
+    and process in chunks. The OM batch size is read from metadata.
+
     Args:
         score_net: ScoreNetworkWrapper with OM model
         pts: [batch_size, 1024, 3] - Raw point cloud
@@ -486,6 +489,16 @@ def _ode_sample_end_to_end(score_net, pts, rgb_feat, init_x, prior_fn, sde_fn,
     init_x = init_x.cpu().numpy()
     shape = init_x.shape
 
+    # Read OM batch size from metadata (default to 1 if not available)
+    if hasattr(score_net, 'metadata') and score_net.metadata is not None:
+        om_batch_size = score_net.metadata.get('config', {}).get('om_batch_size', 1)
+    else:
+        om_batch_size = 1
+    print(f"Using OM batch size: {om_batch_size} (total batch: {batch_size})")
+
+    # Calculate number of chunks needed
+    num_chunks = (batch_size + om_batch_size - 1) // om_batch_size
+
     def ode_func(t, x):
         """ODE function for use by the ODE solver."""
         x_tensor = torch.tensor(x.reshape(-1, pose_dim), dtype=torch.float32, device=score_net.device)
@@ -495,13 +508,31 @@ def _ode_sample_end_to_end(score_net, pts, rgb_feat, init_x, prior_fn, sde_fn,
         diffusion = diffusion.cpu().numpy()
 
         # Call end-to-end OM model with raw pts and rgb_feat
-        with torch.no_grad():
-            score = score_net(
-                pts_feat=pts,  # Actually raw pts [bs, 1024, 3]
-                rgb_feat=rgb_feat if rgb_feat is not None else torch.zeros(batch_size, 1024, 384, device=score_net.device),
-                sampled_pose=x_tensor,
-                t=time_steps
-            )
+        # Split into chunks to match OM model's batch size
+        score_list = []
+        for chunk_idx in range(num_chunks):
+            start_idx = chunk_idx * om_batch_size
+            end_idx = min((chunk_idx + 1) * om_batch_size, batch_size)
+
+            pts_chunk = pts[start_idx:end_idx]  # [om_batch_size, 1024, 3]
+            if rgb_feat is not None:
+                rgb_feat_chunk = rgb_feat[start_idx:end_idx]
+            else:
+                rgb_feat_chunk = torch.zeros(om_batch_size, 1024, 384, device=score_net.device)
+
+            x_chunk = x_tensor[start_idx:end_idx]  # [om_batch_size, pose_dim]
+            t_chunk = time_steps[start_idx:end_idx]  # [om_batch_size, 1]
+
+            with torch.no_grad():
+                score_chunk = score_net(
+                    pts_feat=pts_chunk,
+                    rgb_feat=rgb_feat_chunk,
+                    sampled_pose=x_chunk,
+                    t=t_chunk
+                )
+            score_list.append(score_chunk)
+
+        score = torch.cat(score_list, dim=0)  # [batch_size, pose_dim]
         score_np = score.cpu().numpy().reshape((-1,))
 
         return drift - 0.5 * (diffusion**2) * score_np
@@ -522,13 +553,31 @@ def _ode_sample_end_to_end(score_net, pts, rgb_feat, init_x, prior_fn, sde_fn,
         vec_eps = torch.ones((x.shape[0], 1), device=x.device) * eps
         drift, diffusion = sde_fn(vec_eps)
 
-        with torch.no_grad():
-            score = score_net(
-                pts_feat=pts,
-                rgb_feat=rgb_feat if rgb_feat is not None else torch.zeros(batch_size, 1024, 384, device=score_net.device),
-                sampled_pose=x.float(),
-                t=vec_eps
-            )
+        # Split into chunks for denoising as well
+        score_list = []
+        for chunk_idx in range(num_chunks):
+            start_idx = chunk_idx * om_batch_size
+            end_idx = min((chunk_idx + 1) * om_batch_size, batch_size)
+
+            pts_chunk = pts[start_idx:end_idx]
+            if rgb_feat is not None:
+                rgb_feat_chunk = rgb_feat[start_idx:end_idx]
+            else:
+                rgb_feat_chunk = torch.zeros(om_batch_size, 1024, 384, device=score_net.device)
+
+            x_chunk = x[start_idx:end_idx]
+            t_chunk = vec_eps[start_idx:end_idx]
+
+            with torch.no_grad():
+                score_chunk = score_net(
+                    pts_feat=pts_chunk,
+                    rgb_feat=rgb_feat_chunk,
+                    sampled_pose=x_chunk.float(),
+                    t=t_chunk
+                )
+            score_list.append(score_chunk)
+
+        score = torch.cat(score_list, dim=0)
         drift = drift - diffusion**2 * score
         mean_x = x + drift * ((1 - eps) / 1000)
         x = mean_x
