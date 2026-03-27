@@ -474,11 +474,11 @@ def export_pointnet2_scorenet_to_onnx(checkpoint_path, output_dir, cfg, device='
             'score': {0: 'batch_size'},
         },
         opset_version=17,
-        verbose=False,
+        verbose=True,  # 启用详细输出
         export_params=True,
         do_constant_folding=False,
-        keep_initializers_as_inputs=True,
-        operator_export_type=torch.onnx.OperatorExportTypes.ONNX,
+        keep_initializers_as_inputs=False,  # 改为 False
+        operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK,  # 改为 ATEN_FALLBACK
     )
     print(f"✓ ONNX export successful: {onnx_path}")
 

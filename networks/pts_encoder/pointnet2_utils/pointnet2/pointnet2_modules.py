@@ -27,43 +27,38 @@ class _PointnetSAModuleBase(nn.Module):
             new_features: (B, npoint, \sum_k(mlps[k][-1])) tensor of the new_features descriptors
             new_idx: (B, npoint) tensor of indices
         """
-        new_features_list = []
 
         xyz_flipped = xyz.transpose(1, 2).contiguous()
         idx = None
-        if new_xyz is None:
-            if self.npoint is not None:
-                idx = pointnet2_utils.furthest_point_sample(xyz, self.npoint)
-                new_xyz = pointnet2_utils.gather_operation(
-                    xyz_flipped,
-                    idx
-                ).transpose(1, 2).contiguous()
-            else:
-                new_xyz = None
+        print('new_xyz',new_xyz)
+        print('self.npoint',self.npoint)
+        # import ipdb;ipdb.set_trace()
+        idx = pointnet2_utils.furthest_point_sample(xyz, self.npoint)
+        new_xyz = pointnet2_utils.gather_operation(
+            xyz_flipped,
+            idx
+        ).transpose(1, 2).contiguous()
+        return self.calculate_xyz_features_idx(xyz, features, new_xyz, idx)
+
+
+    def forward_npoint_none(self, xyz: torch.Tensor, features: torch.Tensor = None, new_xyz=None, return_idx=False ,index=None):
+        return self.calculate_xyz_features_idx(xyz, features, None, None)
+
+    def calculate_xyz_features_idx(self, xyz, features, new_xyz, idx):
+        new_features_list = []
 
         for i in range(len(self.groupers)):
             new_features = self.groupers[i](xyz, new_xyz, features)  # (B, C, npoint, nsample)
 
             new_features = self.mlps[i](new_features)  # (B, mlp[-1], npoint, nsample)
 
-            if self.pool_method == 'max_pool':
-                # new_features = F.max_pool2d(
-                #     new_features, kernel_size=[1, new_features.size(3)]
-                # )  # (B, mlp[-1], npoint, 1)
-                new_features = torch.amax(new_features, dim=3, keepdim=True)
-            elif self.pool_method == 'avg_pool':
-                new_features = F.avg_pool2d(
-                    new_features, kernel_size=[1, new_features.size(3)]
-                )  # (B, mlp[-1], npoint, 1)
-            else:
-                raise NotImplementedError
+            new_features = torch.amax(new_features, dim=3, keepdim=True)
 
             new_features = new_features.squeeze(-1)  # (B, mlp[-1], npoint)
             new_features_list.append(new_features)
 
-        if return_idx:
-            return new_xyz, torch.cat(new_features_list, dim=1), idx
-        return new_xyz, torch.cat(new_features_list, dim=1)
+
+        return new_xyz, torch.cat(new_features_list, dim=1), idx
 
 
 class PointnetSAModuleMSG(_PointnetSAModuleBase):

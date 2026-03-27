@@ -240,6 +240,7 @@ class Pointnet2ClsMSGFus(nn.Module):
                 )
             )
             channel_in = channel_out + input_channels
+        self.SA_modules[-1].forward = self.SA_modules[-1].forward_npoint_none
 
 
     def _break_up_pc(self, pc):
@@ -258,19 +259,30 @@ class Pointnet2ClsMSGFus(nn.Module):
         # features: bs * F * npoints
 
         l_xyz, l_features = [xyz], [features]
-        for i in range(len(self.SA_modules)):
-            if i != 0:
-                l_features[i] = torch.concatenate([l_features[i], features], dim=1) # concatenate
+
+        # first
+        li_xyz, li_features, idx = self.SA_modules[0](l_xyz[0], l_features[0], return_idx=True)
+        l_xyz.append(li_xyz)
+        l_features.append(li_features)
+        features = torch.gather(features, 2, 
+                    torch.unsqueeze(idx.type(torch.int64), 1).expand(-1, features.shape[1], -1))
+        # middle
+        for i in range(1,len(self.SA_modules)-1):
+            l_features[i] = torch.concatenate([l_features[i], features], dim=1) # concatenate
             li_xyz, li_features, idx = self.SA_modules[i](l_xyz[i], l_features[i], return_idx=True)
             l_xyz.append(li_xyz)
             l_features.append(li_features)
-            if idx != None:
-                features = torch.gather(
-                    features, 2, 
-                    torch.unsqueeze(idx.type(torch.int64), 1).expand(-1, features.shape[1], -1)
-                ) # only keep features of remaining points
-            else:
-                assert i == len(self.SA_modules) - 1
+
+            features = torch.gather(features, 2, 
+                torch.unsqueeze(idx.type(torch.int64), 1).expand(-1, features.shape[1], -1)) 
+        # last 
+        i += 1
+        l_features[i] = torch.concatenate([l_features[i], features], dim=1) # concatenate
+        li_xyz, li_features, idx = self.SA_modules[i](l_xyz[i], l_features[i], return_idx=True)
+        l_xyz.append(li_xyz)
+        l_features.append(li_features)
+        assert i == len(self.SA_modules) - 1
+
         return l_features[-1].squeeze(-1)
 
 

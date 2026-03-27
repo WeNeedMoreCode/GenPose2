@@ -20,16 +20,8 @@ class FurthestPointSampling(Function):
         :return:
              output: (B, npoint) tensor containing the set
         """
-        assert xyz.is_contiguous()
-
-        B, N, _ = xyz.size()
-        device = xyz.device
-        output = torch.empty((B, npoint), dtype=torch.int64, device=device)
-        temp = torch.empty((B, N), dtype=torch.float32, device=device)
-        temp.fill_(1e10)
-
-        pointnet2.furthest_point_sampling_wrapper(B, N, npoint, xyz, temp, output)
-        return output
+        # ONNX-compatible: 直接调用底层函数，避免 wrapper 的 .copy_() 操作
+        return pointnet2._furthest_point_sampling(xyz, npoint)
 
     @staticmethod
     def backward(xyz, a=None):
@@ -50,27 +42,15 @@ class GatherOperation(Function):
         :return:
             output: (B, C, npoint)
         """
-        assert features.is_contiguous()
-        assert idx.is_contiguous()
-
-        B, npoint = idx.size()
-        _, C, N = features.size()
-        device = features.device
-        output = torch.empty((B, C, npoint), dtype=torch.float32, device=device)
-
-        pointnet2.gather_points_wrapper(B, C, N, npoint, features, idx, output)
-
-        ctx.for_backwards = (idx, C, N)
-        return output
+        # ONNX-compatible: 直接调用底层函数，避免 wrapper 的 .copy_() 操作
+        ctx.for_backwards = (idx, features.shape[1], features.shape[2])
+        return pointnet2._gather_points(features, idx)
 
     @staticmethod
     def backward(ctx, grad_out):
         idx, C, N = ctx.for_backwards
-        B, npoint = idx.size()
-        device = grad_out.device
-        grad_features = Variable(torch.empty((B, C, N), dtype=torch.float32, device=device).zero_())
-        grad_out_data = grad_out.data.contiguous()
-        pointnet2.gather_points_grad_wrapper(B, C, N, npoint, grad_out_data, idx, grad_features.data)
+        # ONNX-compatible: 直接调用底层函数，避免 wrapper 的 .copy_() 操作
+        grad_features = pointnet2._gather_points_grad(grad_out, idx, N)
         return grad_features, None
 
 
@@ -170,18 +150,9 @@ class GroupingOperation(Function):
         :return:
             output: (B, C, npoint, nsample) tensor
         """
-        assert features.is_contiguous()
-        assert idx.is_contiguous()
-
-        B, nfeatures, nsample = idx.size()
-        _, C, N = features.size()
-        device = features.device
-        output = torch.empty((B, C, nfeatures, nsample), dtype=torch.float32, device=device)
-
-        pointnet2.group_points_wrapper(B, C, N, nfeatures, nsample, features, idx, output)
-
-        ctx.for_backwards = (idx, N)
-        return output
+        # ONNX-compatible: 直接调用底层函数，避免 wrapper 的 .copy_() 操作
+        ctx.for_backwards = (idx, features.shape[2])
+        return pointnet2._group_points(features, idx)
 
     @staticmethod
     def backward(ctx, grad_out: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -192,13 +163,8 @@ class GroupingOperation(Function):
             grad_features: (B, C, N) gradient of the features
         """
         idx, N = ctx.for_backwards
-
-        B, C, npoint, nsample = grad_out.size()
-        device = grad_out.device
-        grad_features = Variable(torch.empty((B, C, N), dtype=torch.float32, device=device).zero_())
-
-        grad_out_data = grad_out.data.contiguous()
-        pointnet2.group_points_grad_wrapper(B, C, N, npoint, nsample, grad_out_data, idx, grad_features.data)
+        # ONNX-compatible: 直接调用底层函数，避免 wrapper 的 .copy_() 操作
+        grad_features = pointnet2._group_points_grad(grad_out, idx, N)
         return grad_features, None
 
 
@@ -218,16 +184,8 @@ class BallQuery(Function):
         :return:
             idx: (B, npoint, nsample) tensor with the indicies of the features that form the query balls
         """
-        assert new_xyz.is_contiguous()
-        assert xyz.is_contiguous()
-
-        B, N, _ = xyz.size()
-        npoint = new_xyz.size(1)
-        device = xyz.device
-        idx = torch.empty((B, npoint, nsample), dtype=torch.int64, device=device).zero_()
-
-        pointnet2.ball_query_wrapper(B, N, npoint, radius, nsample, new_xyz, xyz, idx)
-        return idx
+        # ONNX-compatible: 直接调用底层函数，避免 wrapper 的 .copy_() 操作
+        return pointnet2._ball_query(new_xyz, xyz, radius, nsample)
 
     @staticmethod
     def backward(ctx, a=None):
@@ -255,6 +213,7 @@ class QueryAndGroup(nn.Module):
         :return:
             new_features: (B, 3 + C, npoint, nsample)
         """
+        # 现在可以直接使用 ball_query 和 grouping_operation（已经是 ONNX 兼容的）
         idx = ball_query(self.radius, self.nsample, xyz, new_xyz)
         xyz_trans = xyz.transpose(1, 2).contiguous()
         grouped_xyz = grouping_operation(xyz_trans, idx)  # (B, 3, npoint, nsample)
@@ -263,7 +222,7 @@ class QueryAndGroup(nn.Module):
         if features is not None:
             grouped_features = grouping_operation(features, idx)
             if self.use_xyz:
-                new_features = torch.cat([grouped_xyz, grouped_features], dim=1)  # (B, C + 3, npoint, nsample)
+                new_features = torch.cat([grouped_xyz, grouped_features], dim=1)
             else:
                 new_features = grouped_features
         else:

@@ -113,7 +113,7 @@ class ScoreNetworkWrapper(nn.Module):
             device_id = 0
 
         # Load metadata
-        metadata_path = self.checkpoint_path.with_suffix('_metadata.json')
+        metadata_path = metadata_path = self.checkpoint_path.parent / f"{self.checkpoint_path.stem}_metadata.json"
         if not metadata_path.exists():
             metadata_path = self.checkpoint_path.parent / 'score_network_metadata.json'
 
