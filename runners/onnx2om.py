@@ -67,9 +67,9 @@ def convert_onnx_to_om(
     # Detect model type from filename
     if 'pointnet2_scorenet' in onnx_path.stem:
         model_type = 'pointnet2_scorenet'
-    elif 'pointnet2_encoder' in onnx_path.stem:
-        model_type = 'pointnet2_encoder'
-    elif 'score' in onnx_path.stem:
+    elif onnx_path.stem == 'pointnet2':
+        model_type = 'pointnet2'
+    elif onnx_path.stem == 'scorenet':
         model_type = 'score'
     elif 'energy' in onnx_path.stem:
         model_type = 'energy'
@@ -97,7 +97,7 @@ def convert_onnx_to_om(
         print("Please run export first:")
         if model_type == 'score':
             print("  python runners/export_onnx.py --agent_type score --output_dir ./onnx_models")
-        elif model_type == 'pointnet2_encoder':
+        elif model_type == 'pointnet2':
             print("  python runners/export_onnx.py --agent_type pointnet2 --output_dir ./onnx_models")
         elif model_type == 'energy':
             print("  python runners/export_onnx.py --agent_type energy --output_dir ./onnx_models")
@@ -148,7 +148,7 @@ def convert_onnx_to_om(
             'sampled_pose': f"{batch_size},9",
             't': f"{batch_size},1"
         }
-    elif model_type == 'pointnet2_encoder':
+    elif model_type == 'pointnet2':
         input_shapes = {
             'pts': f"{batch_size},1024,3",
             'rgb_feat': f"{batch_size},1024,384"
@@ -226,8 +226,8 @@ def main():
         description='Convert GenPose2 ONNX models to OM format using ATC tool'
     )
     parser.add_argument('--onnx_path', type=str,
-                        default='./onnx_models/score_network.onnx',
-                        help='Path to input ONNX model (score_network.onnx or energy_network.onnx)')
+                        default='./onnx_models/scorenet.onnx',
+                        help='Path to input ONNX model (scorenet.onnx, pointnet2.onnx, etc.)')
     parser.add_argument('--output', type=str,
                         dest='output_path',
                         default=None,

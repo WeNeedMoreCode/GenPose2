@@ -100,6 +100,25 @@ def export_pointnet2_to_onnx(checkpoint_path, output_dir, cfg, device='cpu', om_
     pts_encoder = agent.net.pts_encoder
     pts_encoder.eval()
 
+    # Create wrapper that matches the inference interface
+    # Pointnet2ClsMSGFus expects a single concatenated input [bs, 1024, 3+384]
+    # but for OM deployment we want separate inputs for flexibility
+    class PointNet2ExportWrapper(nn.Module):
+        def __init__(self, pts_encoder):
+            super().__init__()
+            self.pts_encoder = pts_encoder
+
+        def forward(self, pts, rgb_feat):
+            # Concatenate pts and rgb_feat pointwise
+            # pts: [bs, 1024, 3], rgb_feat: [bs, 1024, 384]
+            # pointcloud: [bs, 1024, 387]
+            pointcloud = torch.cat([pts, rgb_feat], dim=-1)
+            # Call the actual PointNet2 encoder
+            return self.pts_encoder(pointcloud)
+
+    export_model = PointNet2ExportWrapper(pts_encoder)
+    export_model.eval()
+
     # Get input info with specified batch_size
     input_info = get_pointnet2_input_info(cfg, batch_size=om_batch_size)
     print(f"\nInput info:")
@@ -120,7 +139,7 @@ def export_pointnet2_to_onnx(checkpoint_path, output_dir, cfg, device='cpu', om_
         dummy_inputs.append(dummy)
 
     # Export to ONNX
-    onnx_path = output_dir / "pointnet2_encoder.onnx"
+    onnx_path = output_dir / "pointnet2.onnx"
     print(f"\nExporting to {onnx_path}...")
 
     input_names = [inp['name'] for inp in input_info['inputs']]
@@ -128,7 +147,7 @@ def export_pointnet2_to_onnx(checkpoint_path, output_dir, cfg, device='cpu', om_
 
     # No dynamic_axes for fixed batch_size OM models
     torch.onnx.export(
-        pts_encoder,
+        export_model,
         tuple(dummy_inputs),
         str(onnx_path),
         input_names=input_names,
@@ -144,10 +163,11 @@ def export_pointnet2_to_onnx(checkpoint_path, output_dir, cfg, device='cpu', om_
     print(f"✓ ONNX export successful: {onnx_path}")
 
     # Save metadata
-    metadata_path = output_dir / "pointnet2_encoder_metadata.json"
+    metadata_path = output_dir / "pointnet2_metadata.json"
     metadata = {
-        'model_type': 'PointNet2Encoder',
+        'model_type': 'PointNet2',
         'architecture': 'Pointnet2ClsMSGFus',
+        'export_wrapper': 'PointNet2ExportWrapper (concatenates pts + rgb_feat)',
         'checkpoint_path': str(checkpoint_path),
         'onnx_path': str(onnx_path),
         'inputs': input_info['inputs'],
@@ -262,7 +282,7 @@ def export_score_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu',
         dummy_inputs.append(dummy)
 
     # Export to ONNX
-    onnx_path = output_dir / "score_network.onnx"
+    onnx_path = output_dir / "scorenet.onnx"
     print(f"\nExporting to {onnx_path}...")
 
     input_names = [inp['name'] for inp in input_info['inputs']]
@@ -286,9 +306,9 @@ def export_score_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu',
     print(f"✓ ONNX export successful: {onnx_path}")
 
     # Save metadata
-    metadata_path = output_dir / "score_network_metadata.json"
+    metadata_path = output_dir / "scorenet_metadata.json"
     metadata = {
-        'model_type': 'ScoreNetworkWrapper',
+        'model_type': 'ScoreNet',
         'checkpoint_path': str(checkpoint_path),
         'onnx_path': str(onnx_path),
         'inputs': input_info['inputs'],
@@ -739,6 +759,7 @@ def main():
             return
 
         # Export
+        args.om_batch_size = getattr(args, "om_batch_size") or 800
         success = export_score_network_to_onnx(checkpoint_path, args.output_dir, cfg, args.device, args.om_batch_size)
 
         if success:
@@ -746,8 +767,8 @@ def main():
             print("Export completed successfully!")
             print(f"{'='*60}")
             print(f"\nExported files:")
-            print(f"  - {args.output_dir}/score_network.onnx")
-            print(f"  - {args.output_dir}/score_network_metadata.json")
+            print(f"  - {args.output_dir}/scorenet.onnx")
+            print(f"  - {args.output_dir}/scorenet_metadata.json")
 
     elif args.agent_type == 'pointnet2':
         checkpoint_path = args.checkpoint_path
@@ -763,6 +784,7 @@ def main():
             return
 
         # Export
+        args.om_batch_size = getattr(args, "om_batch_size") or 16
         success = export_pointnet2_to_onnx(checkpoint_path, args.output_dir, cfg, args.device, args.om_batch_size)
 
         if success:
@@ -770,8 +792,8 @@ def main():
             print("Export completed successfully!")
             print(f"{'='*60}")
             print(f"\nExported files:")
-            print(f"  - {args.output_dir}/pointnet2_encoder.onnx")
-            print(f"  - {args.output_dir}/pointnet2_encoder_metadata.json")
+            print(f"  - {args.output_dir}/pointnet2.onnx")
+            print(f"  - {args.output_dir}/pointnet2_metadata.json")
 
     elif args.agent_type == 'energy':
         checkpoint_path = args.checkpoint_path
