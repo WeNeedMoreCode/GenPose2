@@ -401,3 +401,101 @@ def create_ode_sampler(score_network, sde, device='npu:0'):
         sde_coeff=sde_coeff,
         device=device
     )
+
+
+class PointNet2EncoderWrapper(nn.Module):
+    """
+    Wrapper for PointNet2 encoder OM model.
+
+    This wrapper loads a PointNet2 encoder exported to OM format
+    and provides a simple forward interface.
+
+    Args:
+        checkpoint_path: Path to OM model (.om file)
+        device: Device to run inference on (e.g., 'npu:0')
+    """
+
+    def __init__(self, checkpoint_path, device='npu:0'):
+        super().__init__()
+        self.checkpoint_path = Path(checkpoint_path)
+        self.device = device
+        self.is_om = self.checkpoint_path.suffix.lower() == '.om'
+
+        if not self.is_om:
+            raise ValueError(f"PointNet2EncoderWrapper only supports OM models, got {checkpoint_path}")
+
+        # Load metadata
+        metadata_path = self.checkpoint_path.parent / f"{self.checkpoint_path.stem}_metadata.json"
+        if metadata_path.exists():
+            import json
+            with open(metadata_path, 'r') as f:
+                self.metadata = json.load(f)
+            print(f"✓ Loaded PointNet2 metadata from: {metadata_path}")
+        else:
+            print(f"Warning: PointNet2 metadata not found")
+            self.metadata = None
+
+        self._load_om_model()
+
+    def _load_om_model(self):
+        """Load PointNet2 OM model using ais_bench InferSession."""
+        try:
+            from ais_bench.infer.interface import InferSession
+        except ImportError:
+            raise ImportError(
+                "OM model requires 'ais_bench' package. "
+                "Install with: pip install ais_bench"
+            )
+
+        # Determine device ID
+        if isinstance(self.device, str) and 'npu:' in self.device:
+            device_id = int(self.device.split(':')[1])
+        else:
+            device_id = 0
+
+        # Load OM model
+        print(f"Loading PointNet2 OM model: {self.checkpoint_path}")
+        self.om_session = InferSession(device_id, str(self.checkpoint_path))
+        print(f"✓ PointNet2 OM model loaded successfully")
+
+    def forward(self, pts, rgb_feat):
+        """
+        Forward pass of PointNet2 encoder.
+
+        Args:
+            pts: [batch_size, 1024, 3] - Point cloud coordinates
+            rgb_feat: [batch_size, 1024, 384] - DINOv2 features
+
+        Returns:
+            pts_feat: [batch_size, 1024] - Encoded point cloud features
+        """
+        # Convert torch tensors to numpy
+        inputs = [
+            pts.cpu().numpy().astype(np.float32),
+            rgb_feat.cpu().numpy().astype(np.float32),
+        ]
+
+        # Run OM inference
+        outputs = self.om_session.infer(inputs)
+
+        # Convert back to torch tensor
+        if isinstance(outputs, (list, tuple)) and len(outputs) == 1:
+            pts_feat = torch.from_numpy(outputs[0])
+        else:
+            pts_feat = torch.from_numpy(outputs)
+
+        return pts_feat.to(self.device)
+
+
+def create_pointnet2_encoder(checkpoint_path, device='npu:0'):
+    """
+    Factory function to create PointNet2EncoderWrapper.
+
+    Args:
+        checkpoint_path: Path to PointNet2 OM checkpoint
+        device: Device to load model on
+
+    Returns:
+        PointNet2EncoderWrapper instance
+    """
+    return PointNet2EncoderWrapper(checkpoint_path, device)

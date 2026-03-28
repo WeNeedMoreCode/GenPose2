@@ -25,7 +25,7 @@ from ipdb import set_trace
 
 from networks.posenet_agent import PoseNet
 from networks.reward import sort_poses_by_energy, ranking_loss
-from networks.score_wrapper import create_score_network, create_ode_sampler
+from networks.score_wrapper import create_score_network, create_ode_sampler, create_pointnet2_encoder
 from networks.gf_algorithms.sde import init_sde
 from datasets.datasets_omni6dpose import Omni6DPoseDataSet, array_to_SymLabel, array_to_CameraIntrinsicsBase, process_batch
 from utils.metrics import get_rot_matrix
@@ -347,6 +347,150 @@ def inference_score_decoupled(save_path):
 
     pickle.dump((all_pred_pose, all_score_feature), open(save_path, 'wb'))
     print("Decoupled score inference complete!")
+
+
+def inference_score_decoupled_om(save_path):
+    """
+    Decoupled inference using separate PointNet2 OM and ScoreNet OM models.
+
+    This version uses:
+    1. PointNet2 OM (bs=16) to extract point cloud features
+    2. ScoreNet OM (bs=800) for ODE sampling
+
+    This provides better performance than the end-to-end PointNet2+ScoreNet OM model
+    while maintaining compatibility with OM deployment.
+
+    Args:
+        save_path: Path to save cached results
+    """
+    if os.path.exists(save_path):
+        return
+
+    # Initialize SDE components
+    prior_fn, marginal_prob_fn, sde_fn, sampling_eps, T = init_sde('ve')
+
+    # Load PointNet2 OM model (for feature extraction)
+    pointnet2_om_path = getattr(cfg, 'pretrained_pointnet2_model_path',
+                                  None) or './onnx_models/pointnet2.om'
+    print(f"\nLoading PointNet2 OM model: {pointnet2_om_path}")
+    pointnet2_encoder = create_pointnet2_encoder(
+        checkpoint_path=pointnet2_om_path,
+        device=cfg.device
+    )
+
+    # Verify PointNet2 OM configuration
+    if hasattr(pointnet2_encoder, 'metadata') and pointnet2_encoder.metadata:
+        pn2_batch_size = pointnet2_encoder.metadata.get('config', {}).get('om_batch_size', None)
+        print(f"PointNet2 OM batch_size: {pn2_batch_size}")
+        if pn2_batch_size and pn2_batch_size != cfg.batch_size:
+            print(f"Warning: PointNet2 OM batch_size ({pn2_batch_size}) != cfg.batch_size ({cfg.batch_size})")
+
+    # Create Score Network OM wrapper (for ODE sampling)
+    score_net = create_score_network(
+        checkpoint_path=cfg.pretrained_score_model_path,
+        device=cfg.device
+    )
+
+    # Verify it's an OM model
+    if not score_net.is_om:
+        raise ValueError(f"inference_score_decoupled_om() requires ScoreNet OM model checkpoint")
+
+    # Verify ScoreNet OM configuration
+    _verify_om_config(score_net)
+
+    # Create ODE sampler with the Score Network OM
+    sampler = create_ode_sampler(
+        score_network=score_net,
+        sde={'prior_fn': prior_fn, 'sde_fn': sde_fn},
+        device=cfg.device
+    )
+
+    all_pred_pose = []
+    all_score_feature = []
+    total_samples = 0
+
+    print("Running decoupled OM inference (PointNet2 OM + ScoreNet OM)...")
+    for i, test_batch in enumerate(tqdm(dataloader, desc="score sampling (decoupled OM)")):
+        torch.npu.synchronize()
+        start_time = time.time()
+
+        batch_sample = process_batch(
+            batch_sample=test_batch,
+            device=cfg.device,
+            pose_mode=cfg.pose_mode,
+        )
+
+        # Extract DINOv2 features as preprocessing
+        rgb_feat = extract_dino_features(batch_sample)
+        if rgb_feat is not None:
+            batch_sample['precomputed_rgb_feat'] = rgb_feat
+
+        # Get batch info
+        bs = batch_sample['pts'].shape[0]
+        pose_dim = get_pose_dim(cfg.pose_mode)
+        pts_center = batch_sample.get('pts_center', None)
+
+        # Extract point cloud features using PointNet2 OM
+        # PointNet2 OM processes bs=16 samples
+        with torch.no_grad():
+            pts_feat = pointnet2_encoder(
+                pts=batch_sample['pts'],           # [bs, 1024, 3]
+                rgb_feat=rgb_feat                  # [bs, 1024, 384]
+            )  # -> [bs, 1024]
+
+        # Generate random initial values for all repeats at once
+        init_x_all = prior_fn((bs, cfg.eval_repeat_num, pose_dim), T=cfg.T0).to(cfg.device)
+
+        # Repeat features and init_x to process all at once
+        # pts_feat: [bs, 1024] -> [bs*repeat_num, 1024]
+        pts_feat_repeated = pts_feat.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
+
+        # No need to repeat rgb_feat - ScoreNet OM doesn't use it in pointwise mode
+        rgb_feat_repeated = None
+
+        init_x_repeated = init_x_all.view(bs * cfg.eval_repeat_num, pose_dim)
+        pts_center_repeated = None if pts_center is None else \
+            pts_center.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
+
+        # Single call to sampler for all repeats
+        # ScoreNet OM processes bs*repeat_num=800 samples
+        with torch.no_grad():
+            _, sampled_pose = sampler.sample(
+                pts_feat=pts_feat_repeated,
+                rgb_feat=rgb_feat_repeated,
+                batch_size=bs * cfg.eval_repeat_num,
+                pose_dim=pose_dim,
+                T=cfg.T0,
+                eps=sampling_eps,
+                rtol=1e-5,
+                atol=1e-5,
+                denoise=True,
+                init_x=init_x_repeated,
+                pts_center=pts_center_repeated
+            )
+
+        # Reshape result from [bs*repeat_num, pose_dim] to [bs, repeat_num, pose_dim]
+        pred_pose = sampled_pose.view(bs, cfg.eval_repeat_num, pose_dim)
+
+        # Save pred_pose (9-dim rot_matrix format)
+        all_pred_pose.append(pred_pose)
+        all_score_feature.append({
+            'pts_feat': pts_feat.cpu(),
+            'rgb_feat': (None if rgb_feat is None else rgb_feat.cpu()),
+        })
+
+        torch.npu.synchronize()
+        elapsed = time.time() - start_time
+        perf_stats['score_time'].append(elapsed)
+        total_samples += pred_pose.shape[0]
+        perf_stats['score_samples'] = total_samples
+
+        if i % 4 == 3:
+            gc.collect()
+
+    pickle.dump((all_pred_pose, all_score_feature), open(save_path, 'wb'))
+    print("Decoupled OM inference complete!")
+
 
 def _verify_om_config(score_net):
     """
@@ -1003,14 +1147,34 @@ if __name__ == '__main__':
     # Auto-detect model type: OM or PyTorch
     is_om_model = cfg.pretrained_score_model_path.endswith('.om')
 
+    # Check if using decoupled OM models (separate PointNet2 OM + ScoreNet OM)
+    use_decoupled_om = False
+    if is_om_model:
+        # Check if PointNet2 OM model exists
+        pointnet2_om_path = getattr(cfg, 'pretrained_pointnet2_model_path',
+                                      None) or './onnx_models/pointnet2.om'
+        if os.path.exists(pointnet2_om_path):
+            use_decoupled_om = True
+
     # Choose inference method
     if is_om_model:
-        # End-to-end PointNet2+ScoreNet OM model
-        print("="*60)
-        print("Using END-TO-END PointNet2+ScoreNet OM inference")
-        print(f"Model: {cfg.pretrained_score_model_path}")
-        print("="*60)
-        inference_pointnet2_scorenet(score_save_path)
+        if use_decoupled_om:
+            # Decoupled OM: PointNet2 OM (bs=16) + ScoreNet OM (bs=800)
+            print("="*60)
+            print("Using DECOUPLED OM inference")
+            print(f"PointNet2 OM: {pointnet2_om_path}")
+            print(f"ScoreNet OM: {cfg.pretrained_score_model_path}")
+            print("Performance: Same as PyTorch (PointNet2 bs=16, ScoreNet bs=800)")
+            print("="*60)
+            inference_score_decoupled_om(score_save_path)
+        else:
+            # End-to-end PointNet2+ScoreNet OM model
+            print("="*60)
+            print("Using END-TO-END PointNet2+ScoreNet OM inference")
+            print(f"Model: {cfg.pretrained_score_model_path}")
+            print("Warning: Slower than decoupled OM (PointNet2 processes 800 samples)")
+            print("="*60)
+            inference_pointnet2_scorenet(score_save_path)
     else:
         # PyTorch model: choose between original and decoupled
         # Set use_decoupled=1 to use decoupled version

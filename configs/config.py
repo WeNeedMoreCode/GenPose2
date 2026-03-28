@@ -40,6 +40,8 @@ def get_config():
     """ training """
     parser.add_argument('--agent_type', type=str, default='score', help='one of the [score, energy, energy_with_ranking, scale]')
     parser.add_argument('--pretrained_score_model_path', type=str)
+    parser.add_argument('--pretrained_pointnet2_model_path', type=str, default=None,
+                        help='Path to PointNet2 OM model for decoupled inference')
     parser.add_argument('--pretrained_energy_model_path', type=str)
     parser.add_argument('--pretrained_scale_model_path', type=str)
     parser.add_argument('--distillation', default=False, action='store_true')
