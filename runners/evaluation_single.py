@@ -348,6 +348,66 @@ def inference_score_decoupled(save_path):
     pickle.dump((all_pred_pose, all_score_feature), open(save_path, 'wb'))
     print("Decoupled score inference complete!")
 
+def _verify_om_config(score_net):
+    """
+    Verify that current inference configuration matches the OM model's export configuration.
+
+    Args:
+        score_net: ScoreNetworkWrapper with OM model
+
+    Raises:
+        ValueError: If configuration doesn't match
+    """
+    if not hasattr(score_net, 'metadata') or score_net.metadata is None:
+        print("Warning: No metadata found, cannot verify configuration")
+        return
+
+    export_config = score_net.metadata.get('config', {})
+    om_batch_size = export_config.get('om_batch_size', None)
+    export_bs = export_config.get('export_config', {}).get('batch_size', None)
+    export_rep = export_config.get('export_config', {}).get('eval_repeat_num', None)
+
+    if om_batch_size is None:
+        print("Warning: om_batch_size not found in metadata")
+        return
+
+    # Current inference configuration
+    infer_bs = cfg.batch_size
+    infer_rep = cfg.eval_repeat_num
+    expected_batch = infer_bs * infer_rep
+
+    print(f"\n{'='*60}")
+    print(f"OM Configuration Verification")
+    print(f"{'='*60}")
+    print(f"Export config:")
+    print(f"  batch_size:     {export_bs if export_bs else 'unknown'}")
+    print(f"  eval_repeat_num: {export_rep if export_rep else 'unknown'}")
+    print(f"  om_batch_size:  {om_batch_size}")
+    print(f"\nInference config:")
+    print(f"  batch_size:     {infer_bs}")
+    print(f"  eval_repeat_num: {infer_rep}")
+    print(f"  expected_batch:  {expected_batch}")
+
+    # Verify batch size matches
+    if expected_batch != om_batch_size:
+        print(f"\n⚠️  CONFIG MISMATCH!")
+        print(f"  Export om_batch_size: {om_batch_size}")
+        print(f"  Inference batch size:  {expected_batch} = {infer_bs} × {infer_rep}")
+        print(f"\nSolutions:")
+        print(f"  1. Update inference config: batch_size={infer_bs}, eval_repeat_num={infer_rep}")
+        print(f"     such that batch_size × eval_repeat_num = {om_batch_size}")
+        print(f"\n  2. Re-export ONNX with correct om_batch_size:")
+        print(f"     python runners/export_onnx.py --agent_type pointnet2_scorenet \\")
+        print(f"       --om_batch_size {expected_batch}")
+        print(f"{'='*60}\n")
+        raise ValueError(
+            f"Configuration mismatch: OM model expects batch_size={om_batch_size}, "
+            f"but inference config gives batch_size={expected_batch} ({infer_bs}×{infer_rep})"
+        )
+    else:
+        print(f"\n✓ Configuration matches!")
+        print(f"{'='*60}\n")
+
 def inference_pointnet2_scorenet(save_path):
     """
     End-to-end inference using PointNet2+ScoreNet OM model.
@@ -375,6 +435,9 @@ def inference_pointnet2_scorenet(save_path):
     if not score_net.is_om:
         raise ValueError(f"inference_pointnet2_scorenet() requires an OM model checkpoint, "
                         f"but got: {cfg.pretrained_score_model_path}")
+
+    # Verify configuration matches export settings
+    _verify_om_config(score_net)
 
     all_pred_pose = []
     all_score_feature = []

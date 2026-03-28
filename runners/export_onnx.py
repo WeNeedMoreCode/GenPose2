@@ -26,7 +26,7 @@ from networks.posenet_agent import PoseNet
 from networks.scalenet import ScaleNet
 
 
-def get_score_network_input_info(cfg):
+def get_score_network_input_info(cfg, batch_size=1):
     """
     Get input dimensions for ScoreNetworkWrapper.
 
@@ -36,18 +36,22 @@ def get_score_network_input_info(cfg):
         - sampled_pose: [batch_size, 9] - Current pose estimate (rot_matrix format)
         - t: [batch_size, 1] - Diffusion timestep
 
+    Args:
+        cfg: Configuration object
+        batch_size: Batch size for ONNX export (default: 1)
+
     Returns:
         dict: Input information including shapes, dtypes, and names
     """
     return {
         'inputs': [
-            {'name': 'pts_feat', 'shape': [1, 1024], 'dtype': 'float32', 'format': 'feature'},
-            {'name': 'rgb_feat', 'shape': [1, 384], 'dtype': 'float32', 'format': 'feature'},
-            {'name': 'sampled_pose', 'shape': [1, 9], 'dtype': 'float32', 'format': 'pose_rot_matrix'},
-            {'name': 't', 'shape': [1, 1], 'dtype': 'float32', 'format': 'timestep'},
+            {'name': 'pts_feat', 'shape': [batch_size, 1024], 'dtype': 'float32', 'format': 'feature'},
+            {'name': 'rgb_feat', 'shape': [batch_size, 384], 'dtype': 'float32', 'format': 'feature'},
+            {'name': 'sampled_pose', 'shape': [batch_size, 9], 'dtype': 'float32', 'format': 'pose_rot_matrix'},
+            {'name': 't', 'shape': [batch_size, 1], 'dtype': 'float32', 'format': 'timestep'},
         ],
         'outputs': [
-            {'name': 'score', 'shape': [1, 9], 'dtype': 'float32'},
+            {'name': 'score', 'shape': [batch_size, 9], 'dtype': 'float32'},
         ],
         'metadata': {
             'export_type': 'score_network_wrapper',
@@ -56,7 +60,7 @@ def get_score_network_input_info(cfg):
     }
 
 
-def export_score_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu'):
+def export_score_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu', om_batch_size=1):
     """
     Export ScoreNetworkWrapper to ONNX format.
 
@@ -65,6 +69,8 @@ def export_score_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu')
         output_dir: Directory to save ONNX model and metadata
         cfg: Configuration object
         device: Device to load model on
+        om_batch_size: Fixed batch size for OM model (default: 1).
+                      Should match inference configuration (e.g., batch_size * eval_repeat_num).
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -72,6 +78,11 @@ def export_score_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu')
     print(f"\n{'='*60}")
     print(f"Exporting Score Network (ScoreNetworkWrapper) to ONNX")
     print(f"{'='*60}")
+    print(f"\nConfiguration:")
+    print(f"  OM Batch Size: {om_batch_size}")
+    if om_batch_size > 1:
+        print(f"  Note: Using fixed batch_size={om_batch_size} for OM deployment")
+        print(f"  (Typically = batch_size * eval_repeat_num, e.g., 16 * 50 = 800)")
 
     # Load ScoreNetworkWrapper
     print(f"\nLoading ScoreNetworkWrapper...")
@@ -84,8 +95,8 @@ def export_score_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu')
     )
     score_net.eval()
 
-    # Get input info
-    input_info = get_score_network_input_info(cfg)
+    # Get input info with specified batch_size
+    input_info = get_score_network_input_info(cfg, batch_size=om_batch_size)
     print(f"\nInput info:")
     for inp in input_info['inputs']:
         print(f"  {inp['name']}: {inp['shape']}, {inp['dtype']}")
@@ -107,28 +118,22 @@ def export_score_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu')
     onnx_path = output_dir / "score_network.onnx"
     print(f"\nExporting to {onnx_path}...")
 
-    dynamic_axes = {}
     input_names = [inp['name'] for inp in input_info['inputs']]
     output_names = [out['name'] for out in input_info['outputs']]
 
-    # Add dynamic batch dimension
-    for name in input_names:
-        dynamic_axes[name] = {0: 'batch_size'}
-    for name in output_names:
-        dynamic_axes[name] = {0: 'batch_size'}
-
+    # No dynamic_axes for fixed batch_size OM models
     torch.onnx.export(
         score_net,
         tuple(dummy_inputs),
         str(onnx_path),
         input_names=input_names,
         output_names=output_names,
-        dynamic_axes=dynamic_axes,
+        dynamic_axes=None,  # Fixed batch_size for OM
         opset_version=17,
         verbose=False,
         export_params=True,
-        do_constant_folding=False,
-        keep_initializers_as_inputs=True,
+        do_constant_folding=True,  # Enable optimization
+        keep_initializers_as_inputs=False,
         operator_export_type=torch.onnx.OperatorExportTypes.ONNX,
     )
     print(f"✓ ONNX export successful: {onnx_path}")
@@ -147,8 +152,25 @@ def export_score_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu')
             'pose_mode': cfg.pose_mode,
             'num_points': cfg.num_points,
             'dino': cfg.dino,
+            'om_batch_size': om_batch_size,
+            # Save the batch_size and repeat_num configuration used for export
+            # This allows verification during inference
+            'export_config': {
+                'batch_size': getattr(cfg, 'batch_size', None),  # If available
+                'eval_repeat_num': getattr(cfg, 'eval_repeat_num', None),  # If available
+                'note': 'om_batch_size = batch_size * eval_repeat_num',
+            }
         }
     }
+
+    # Verify the calculation
+    if metadata['config']['export_config']['batch_size'] and metadata['config']['export_config']['eval_repeat_num']:
+        expected_batch_size = metadata['config']['export_config']['batch_size'] * metadata['config']['export_config']['eval_repeat_num']
+        if expected_batch_size != om_batch_size:
+            print(f"\nWarning: om_batch_size mismatch!")
+            print(f"  Expected from config: {expected_batch_size} = {metadata['config']['export_config']['batch_size']} * {metadata['config']['export_config']['eval_repeat_num']}")
+            print(f"  Specified om_batch_size: {om_batch_size}")
+            print(f"  Please ensure consistency!")
 
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2)
@@ -462,6 +484,7 @@ def export_pointnet2_scorenet_to_onnx(checkpoint_path, output_dir, cfg, device='
             return self.pose_score_net(data)
 
     pn2s_net = PointNet2ScoreNetExportWrapper(net.pts_encoder, net.pose_score_net)
+    pn2s_net.eval()
 
     torch.onnx.export(
         pn2s_net,
@@ -469,19 +492,14 @@ def export_pointnet2_scorenet_to_onnx(checkpoint_path, output_dir, cfg, device='
         str(onnx_path),
         input_names=['pts', 'rgb_feat', 'sampled_pose', 't'],
         output_names=['score'],
-        dynamic_axes={
-            'pts': {0: 'batch_size'},
-            'rgb_feat': {0: 'batch_size'},
-            'sampled_pose': {0: 'batch_size'},
-            't': {0: 'batch_size'},
-            'score': {0: 'batch_size'},
-        },
+        # 不使用 dynamic_axes，因为我们导出的是固定 batch_size
+        dynamic_axes=None,
         opset_version=17,
-        verbose=True,  # 启用详细输出
+        verbose=False,  # 改为 False，避免大量输出
         export_params=True,
-        do_constant_folding=False,
-        keep_initializers_as_inputs=False,  # 改为 False
-        operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK,  # 改为 ATEN_FALLBACK
+        do_constant_folding=True,  # 改为 True，启用常量折叠优化
+        keep_initializers_as_inputs=False,
+        operator_export_type=torch.onnx.OperatorExportTypes.ONNX,  # 改为标准 ONNX
     )
     print(f"✓ ONNX export successful: {onnx_path}")
 
@@ -505,9 +523,25 @@ def export_pointnet2_scorenet_to_onnx(checkpoint_path, output_dir, cfg, device='
             'pose_mode': cfg.pose_mode,
             'num_points': cfg.num_points,
             'dino': cfg.dino,
-            'om_batch_size': om_batch_size,  # Save OM batch size for reference
+            'om_batch_size': om_batch_size,
+            # Save the batch_size and repeat_num configuration used for export
+            # This allows verification during inference
+            'export_config': {
+                'batch_size': getattr(cfg, 'batch_size', None),  # If available
+                'eval_repeat_num': getattr(cfg, 'eval_repeat_num', None),  # If available
+                'note': 'om_batch_size = batch_size * eval_repeat_num',
+            }
         }
     }
+
+    # Verify the calculation
+    if metadata['config']['export_config']['batch_size'] and metadata['config']['export_config']['eval_repeat_num']:
+        expected_batch_size = metadata['config']['export_config']['batch_size'] * metadata['config']['export_config']['eval_repeat_num']
+        if expected_batch_size != om_batch_size:
+            print(f"\nWarning: om_batch_size mismatch!")
+            print(f"  Expected from config: {expected_batch_size} = {metadata['config']['export_config']['batch_size']} * {metadata['config']['export_config']['eval_repeat_num']}")
+            print(f"  Specified om_batch_size: {om_batch_size}")
+            print(f"  Please ensure consistency!")
 
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2)
@@ -527,8 +561,8 @@ def main():
                         help='Path to checkpoint (auto-detected if not specified)')
     parser.add_argument('--device', type=str, default='cpu',
                         help='Device to use for export (default: cpu)')
-    parser.add_argument('--om_batch_size', type=int, default=1,
-                        help='Fixed batch size for OM model (for pointnet2_scorenet only). '
+    parser.add_argument('--om_batch_size', type=int, default=800,
+                        help='Fixed batch size for OM model. '
                              'Should typically be batch_size * eval_repeat_num (e.g., 16*50=800). '
                              'For best performance, match this to your inference configuration.')
 
@@ -558,7 +592,7 @@ def main():
             return
 
         # Export
-        success = export_score_network_to_onnx(checkpoint_path, args.output_dir, cfg, args.device)
+        success = export_score_network_to_onnx(checkpoint_path, args.output_dir, cfg, args.device, args.om_batch_size)
 
         if success:
             print(f"\n{'='*60}")
