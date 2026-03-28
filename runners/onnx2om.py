@@ -67,6 +67,8 @@ def convert_onnx_to_om(
     # Detect model type from filename
     if 'pointnet2_scorenet' in onnx_path.stem:
         model_type = 'pointnet2_scorenet'
+    elif 'pointnet2_encoder' in onnx_path.stem:
+        model_type = 'pointnet2_encoder'
     elif 'score' in onnx_path.stem:
         model_type = 'score'
     elif 'energy' in onnx_path.stem:
@@ -95,12 +97,14 @@ def convert_onnx_to_om(
         print("Please run export first:")
         if model_type == 'score':
             print("  python runners/export_onnx.py --agent_type score --output_dir ./onnx_models")
+        elif model_type == 'pointnet2_encoder':
+            print("  python runners/export_onnx.py --agent_type pointnet2 --output_dir ./onnx_models")
         elif model_type == 'energy':
             print("  python runners/export_onnx.py --agent_type energy --output_dir ./onnx_models")
         elif model_type == 'scale':
             print("  python runners/export_onnx.py --agent_type scale --output_dir ./onnx_models")
         else:
-            print("  python runners/export_onnx.py --agent_type [score|energy|scale] --output_dir ./onnx_models")
+            print("  python runners/export_onnx.py --agent_type [score|pointnet2|energy|scale] --output_dir ./onnx_models")
         return False
 
     # Check if ATC tool is available
@@ -143,6 +147,11 @@ def convert_onnx_to_om(
             'rgb_feat': f"{batch_size},1024,384",
             'sampled_pose': f"{batch_size},9",
             't': f"{batch_size},1"
+        }
+    elif model_type == 'pointnet2_encoder':
+        input_shapes = {
+            'pts': f"{batch_size},1024,3",
+            'rgb_feat': f"{batch_size},1024,384"
         }
     elif model_type in ['score', 'energy']:
         input_shapes = {

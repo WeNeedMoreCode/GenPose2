@@ -24,6 +24,153 @@ from configs.config import get_config
 from networks.score_wrapper import create_score_network
 from networks.posenet_agent import PoseNet
 from networks.scalenet import ScaleNet
+from networks.pts_encoder.pointnet2 import Pointnet2ClsMSGFus
+
+
+def get_pointnet2_input_info(cfg, batch_size=1):
+    """
+    Get input dimensions for PointNet2 encoder.
+
+    The PointNet2 encoder (Pointnet2ClsMSGFus) expects:
+        - pts: [batch_size, 1024, 3] - Point cloud coordinates
+        - rgb_feat: [batch_size, 1024, 384] - RGB features (DINOv2, pointwise mode)
+
+    Args:
+        cfg: Configuration object
+        batch_size: Batch size for ONNX export (default: 1)
+
+    Returns:
+        dict: Input information including shapes, dtypes, and names
+    """
+    return {
+        'inputs': [
+            {'name': 'pts', 'shape': [batch_size, 1024, 3], 'dtype': 'float32', 'format': 'point_cloud'},
+            {'name': 'rgb_feat', 'shape': [batch_size, 1024, 384], 'dtype': 'float32', 'format': 'dino_features'},
+        ],
+        'outputs': [
+            {'name': 'pts_feat', 'shape': [batch_size, 1024], 'dtype': 'float32'},
+        ],
+        'metadata': {
+            'export_type': 'pointnet2_encoder',
+            'architecture': 'Pointnet2ClsMSGFus',
+            'dino_mode': 'pointwise',
+        }
+    }
+
+
+def export_pointnet2_to_onnx(checkpoint_path, output_dir, cfg, device='cpu', om_batch_size=1):
+    """
+    Export PointNet2 encoder to ONNX format.
+
+    Args:
+        checkpoint_path: Path to PyTorch checkpoint (ScoreNet checkpoint containing PointNet2)
+        output_dir: Directory to save ONNX model and metadata
+        cfg: Configuration object
+        device: Device to load model on
+        om_batch_size: Fixed batch size for OM model (default: 1).
+                      Typically use batch_size from DataLoader (e.g., 16).
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n{'='*60}")
+    print(f"Exporting PointNet2 Encoder to ONNX")
+    print(f"{'='*60}")
+    print(f"\nConfiguration:")
+    print(f"  OM Batch Size: {om_batch_size}")
+    if om_batch_size > 1:
+        print(f"  Note: Using fixed batch_size={om_batch_size} for OM deployment")
+        print(f"  (Typically = DataLoader batch_size, e.g., 16)")
+
+    # Load PoseNet to extract PointNet2 encoder
+    print(f"\nLoading PointNet2 encoder from ScoreNet checkpoint...")
+    print(f"  Checkpoint: {checkpoint_path}")
+    print(f"  Device: {device}")
+
+    score_cfg = get_config()
+    score_cfg.agent_type = 'score'
+    score_cfg.device = device
+    score_cfg.dino = 'pointwise'
+
+    agent = PoseNet(score_cfg)
+    agent.load_ckpt(model_dir=checkpoint_path, model_path=True, load_model_only=True)
+    agent.net.eval()
+
+    # Extract PointNet2 encoder
+    pts_encoder = agent.net.pts_encoder
+    pts_encoder.eval()
+
+    # Get input info with specified batch_size
+    input_info = get_pointnet2_input_info(cfg, batch_size=om_batch_size)
+    print(f"\nInput info:")
+    for inp in input_info['inputs']:
+        print(f"  {inp['name']}: {inp['shape']}, {inp['dtype']}")
+
+    print(f"\nOutput info:")
+    for out in input_info['outputs']:
+        print(f"  {out['name']}: {out['shape']}, {out['dtype']}")
+
+    # Prepare dummy inputs
+    dummy_inputs = []
+    for inp in input_info['inputs']:
+        if inp['dtype'] == 'int64':
+            dummy = torch.randint(0, 224, inp['shape'], dtype=torch.int64)
+        else:
+            dummy = torch.randn(inp['shape'], dtype=torch.float32)
+        dummy_inputs.append(dummy)
+
+    # Export to ONNX
+    onnx_path = output_dir / "pointnet2_encoder.onnx"
+    print(f"\nExporting to {onnx_path}...")
+
+    input_names = [inp['name'] for inp in input_info['inputs']]
+    output_names = [out['name'] for out in input_info['outputs']]
+
+    # No dynamic_axes for fixed batch_size OM models
+    torch.onnx.export(
+        pts_encoder,
+        tuple(dummy_inputs),
+        str(onnx_path),
+        input_names=input_names,
+        output_names=output_names,
+        dynamic_axes=None,  # Fixed batch_size for OM
+        opset_version=17,
+        verbose=False,
+        export_params=True,
+        do_constant_folding=True,
+        keep_initializers_as_inputs=False,
+        operator_export_type=torch.onnx.OperatorExportTypes.ONNX,
+    )
+    print(f"✓ ONNX export successful: {onnx_path}")
+
+    # Save metadata
+    metadata_path = output_dir / "pointnet2_encoder_metadata.json"
+    metadata = {
+        'model_type': 'PointNet2Encoder',
+        'architecture': 'Pointnet2ClsMSGFus',
+        'checkpoint_path': str(checkpoint_path),
+        'onnx_path': str(onnx_path),
+        'inputs': input_info['inputs'],
+        'outputs': input_info['outputs'],
+        'metadata': input_info['metadata'],
+        'config': {
+            'device': cfg.device,
+            'num_points': cfg.num_points,
+            'dino': cfg.dino,
+            'pointnet2_params': cfg.pointnet2_params,
+            'om_batch_size': om_batch_size,
+            'export_config': {
+                'batch_size': getattr(cfg, 'batch_size', None),
+                'note': 'om_batch_size = DataLoader batch_size (typically 16)',
+            }
+        }
+    }
+
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    print(f"✓ Metadata saved: {metadata_path}")
+
+    return True
 
 
 def get_score_network_input_info(cfg, batch_size=1):
@@ -132,7 +279,7 @@ def export_score_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu',
         opset_version=17,
         verbose=False,
         export_params=True,
-        do_constant_folding=True,  # Enable optimization
+        do_constant_folding=False,  # Enable optimization
         keep_initializers_as_inputs=False,
         operator_export_type=torch.onnx.OperatorExportTypes.ONNX,
     )
@@ -553,8 +700,8 @@ def export_pointnet2_scorenet_to_onnx(checkpoint_path, output_dir, cfg, device='
 def main():
     parser = argparse.ArgumentParser(description='Export GenPose2 Networks to ONNX')
     parser.add_argument('--agent_type', type=str, default='score',
-                        choices=['score', 'energy', 'scale', 'pointnet2_scorenet'],
-                        help='Agent type to export: score, energy, scale, or pointnet2_scorenet')
+                        choices=['score', 'energy', 'scale', 'pointnet2', 'pointnet2_scorenet'],
+                        help='Agent type to export: score, energy, scale, pointnet2, or pointnet2_scorenet')
     parser.add_argument('--output_dir', type=str, default='./onnx_models',
                         help='Output directory for ONNX models')
     parser.add_argument('--checkpoint_path', type=str, default=None,
@@ -601,6 +748,30 @@ def main():
             print(f"\nExported files:")
             print(f"  - {args.output_dir}/score_network.onnx")
             print(f"  - {args.output_dir}/score_network_metadata.json")
+
+    elif args.agent_type == 'pointnet2':
+        checkpoint_path = args.checkpoint_path
+        if checkpoint_path is None:
+            checkpoint_path = getattr(cfg, 'pretrained_score_model_path',
+                                        None) or './results/ckpts/ScoreNet/scorenet.pth'
+            print(f"Auto-detected checkpoint: {checkpoint_path}")
+
+        # Check if checkpoint exists
+        if not os.path.exists(checkpoint_path):
+            print(f"\nWarning: Checkpoint not found: {checkpoint_path}")
+            print(f"Please specify the correct path with --checkpoint_path")
+            return
+
+        # Export
+        success = export_pointnet2_to_onnx(checkpoint_path, args.output_dir, cfg, args.device, args.om_batch_size)
+
+        if success:
+            print(f"\n{'='*60}")
+            print("Export completed successfully!")
+            print(f"{'='*60}")
+            print(f"\nExported files:")
+            print(f"  - {args.output_dir}/pointnet2_encoder.onnx")
+            print(f"  - {args.output_dir}/pointnet2_encoder_metadata.json")
 
     elif args.agent_type == 'energy':
         checkpoint_path = args.checkpoint_path
