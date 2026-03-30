@@ -141,7 +141,7 @@ class ScoreNetworkWrapper(nn.Module):
         PyTorch Mode:
             Args:
                 pts_feat: [batch_size, 1024] - Point cloud features from PointNet2
-                rgb_feat: [batch_size, 384] - RGB features from DINOv2
+                rgb_feat: [batch_size, 384] - RGB features from DINOv2 (may be None)
                 sampled_pose: [batch_size, 9] - Current pose estimate
                 t: [batch_size, 1] - Diffusion timestep
             Returns:
@@ -150,7 +150,7 @@ class ScoreNetworkWrapper(nn.Module):
         OM Mode (end-to-end):
             Args:
                 pts_feat: [batch_size, 1024, 3] - Raw point cloud
-                rgb_feat: [batch_size, 1024, 384] - DINOv2 features
+                rgb_feat: [batch_size, 1024, 384] - DINOv2 features (may be unused)
                 sampled_pose: [batch_size, 9] - Current pose estimate
                 t: [batch_size, 1] - Diffusion timestep
             Returns:
@@ -161,13 +161,23 @@ class ScoreNetworkWrapper(nn.Module):
             # Convert torch tensors to numpy
             inputs = [
                 pts_feat.cpu().numpy().astype(np.float32),  # Actually raw pts
-                rgb_feat.cpu().numpy().astype(np.float32),
-                sampled_pose.cpu().numpy().astype(np.float32),
-                t.cpu().numpy().astype(np.float32)
             ]
 
+            # Check if rgb_feat is used (based on metadata)
+            use_rgb_feat = True
+            if hasattr(self, 'metadata') and self.metadata is not None:
+                use_rgb_feat = self.metadata.get('metadata', {}).get('use_rgb_feat', True)
+
+            if use_rgb_feat and rgb_feat is not None:
+                inputs.append(rgb_feat.cpu().numpy().astype(np.float32))
+
+            inputs.extend([
+                sampled_pose.cpu().numpy().astype(np.float32),
+                t.cpu().numpy().astype(np.float32)
+            ])
+
             # Run OM inference
-            outputs = self.om_session.infer(inputs)
+            outputs = self.om_session.infer(inputs, mode="dymbatch")
 
             # Convert back to torch tensor
             if isinstance(outputs, (list, tuple)) and len(outputs) == 1:
@@ -476,7 +486,7 @@ class PointNet2EncoderWrapper(nn.Module):
         ]
 
         # Run OM inference
-        outputs = self.om_session.infer(inputs)
+        outputs = self.om_session.infer(inputs, mode="dymbatch")
 
         # Convert back to torch tensor
         if isinstance(outputs, (list, tuple)) and len(outputs) == 1:

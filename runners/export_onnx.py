@@ -44,11 +44,11 @@ def get_pointnet2_input_info(cfg, batch_size=1):
     """
     return {
         'inputs': [
-            {'name': 'pts', 'shape': [batch_size, 1024, 3], 'dtype': 'float32', 'format': 'point_cloud'},
-            {'name': 'rgb_feat', 'shape': [batch_size, 1024, 384], 'dtype': 'float32', 'format': 'dino_features'},
+            {'name': 'pts', 'shape': [1, 1024, 3], 'dtype': 'float32', 'format': 'point_cloud'},
+            {'name': 'rgb_feat', 'shape': [1, 1024, 384], 'dtype': 'float32', 'format': 'dino_features'},
         ],
         'outputs': [
-            {'name': 'pts_feat', 'shape': [batch_size, 1024], 'dtype': 'float32'},
+            {'name': 'pts_feat', 'shape': [1, 1024], 'dtype': 'float32'},
         ],
         'metadata': {
             'export_type': 'pointnet2_encoder',
@@ -145,14 +145,21 @@ def export_pointnet2_to_onnx(checkpoint_path, output_dir, cfg, device='cpu', om_
     input_names = [inp['name'] for inp in input_info['inputs']]
     output_names = [out['name'] for out in input_info['outputs']]
 
-    # No dynamic_axes for fixed batch_size OM models
+    # Use dynamic_axes for dynamic batch size support
+    # This allows OM conversion with --dynamic_batch_size
+    dynamic_axes = {
+        'pts': {0: 'batch_size'},
+        'rgb_feat': {0: 'batch_size'},
+        'pts_feat': {0: 'batch_size'},
+    }
+
     torch.onnx.export(
         export_model,
         tuple(dummy_inputs),
         str(onnx_path),
         input_names=input_names,
         output_names=output_names,
-        dynamic_axes=None,  # Fixed batch_size for OM
+        dynamic_axes=dynamic_axes,  # Dynamic batch_size
         opset_version=17,
         verbose=False,
         export_params=True,
@@ -197,7 +204,13 @@ def get_score_network_input_info(cfg, batch_size=1):
     """
     Get input dimensions for ScoreNetworkWrapper.
 
-    The ScoreNetworkWrapper expects:
+    In pointwise mode (dino='pointwise'):
+        - pts_feat: [batch_size, 1024] - Point cloud features (already contains RGB info)
+        - sampled_pose: [batch_size, 9] - Current pose estimate (rot_matrix format)
+        - t: [batch_size, 1] - Diffusion timestep
+        Note: rgb_feat is NOT used (dino_dim=0), so it's excluded from ONNX export
+
+    In global mode (dino='global'):
         - pts_feat: [batch_size, 1024] - Point cloud features
         - rgb_feat: [batch_size, 384] - RGB features (DINOv2)
         - sampled_pose: [batch_size, 9] - Current pose estimate (rot_matrix format)
@@ -210,19 +223,32 @@ def get_score_network_input_info(cfg, batch_size=1):
     Returns:
         dict: Input information including shapes, dtypes, and names
     """
+    # In pointwise mode, rgb_feat is fused in pts_feat and NOT used by ScoreNet
+    # (dino_dim=0, so ScoreNet takes the else branch without rgb_feat)
+    use_rgb_feat = (cfg.dino == 'global')
+
+    inputs = [
+        {'name': 'pts_feat', 'shape': [1, 1024], 'dtype': 'float32', 'format': 'feature'},
+    ]
+
+    if use_rgb_feat:
+        inputs.append({'name': 'rgb_feat', 'shape': [1, 384], 'dtype': 'float32', 'format': 'feature'})
+
+    inputs.extend([
+        {'name': 'sampled_pose', 'shape': [1, 9], 'dtype': 'float32', 'format': 'pose_rot_matrix'},
+        {'name': 't', 'shape': [1, 1], 'dtype': 'float32', 'format': 'timestep'},
+    ])
+
     return {
-        'inputs': [
-            {'name': 'pts_feat', 'shape': [batch_size, 1024], 'dtype': 'float32', 'format': 'feature'},
-            {'name': 'rgb_feat', 'shape': [batch_size, 384], 'dtype': 'float32', 'format': 'feature'},
-            {'name': 'sampled_pose', 'shape': [batch_size, 9], 'dtype': 'float32', 'format': 'pose_rot_matrix'},
-            {'name': 't', 'shape': [batch_size, 1], 'dtype': 'float32', 'format': 'timestep'},
-        ],
+        'inputs': inputs,
         'outputs': [
-            {'name': 'score', 'shape': [batch_size, 9], 'dtype': 'float32'},
+            {'name': 'score', 'shape': [1, 9], 'dtype': 'float32'},
         ],
         'metadata': {
             'export_type': 'score_network_wrapper',
             'pose_mode': cfg.pose_mode,
+            'dino_mode': cfg.dino,
+            'use_rgb_feat': use_rgb_feat,
         }
     }
 
@@ -247,9 +273,12 @@ def export_score_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu',
     print(f"{'='*60}")
     print(f"\nConfiguration:")
     print(f"  OM Batch Size: {om_batch_size}")
+    print(f"  DINO Mode: {cfg.dino}")
     if om_batch_size > 1:
         print(f"  Note: Using fixed batch_size={om_batch_size} for OM deployment")
         print(f"  (Typically = batch_size * eval_repeat_num, e.g., 16 * 50 = 800)")
+    if cfg.dino == 'pointwise':
+        print(f"  Pointwise mode: rgb_feat is excluded (already fused in pts_feat)")
 
     # Load ScoreNetworkWrapper
     print(f"\nLoading ScoreNetworkWrapper...")
@@ -281,6 +310,27 @@ def export_score_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu',
             dummy = torch.randn(inp['shape'], dtype=torch.float32)
         dummy_inputs.append(dummy)
 
+    # Create export wrapper to handle variable number of inputs
+    # ScoreNetworkWrapper.forward() always expects 4 args, but pointwise mode exports 3
+    use_rgb_feat = input_info['metadata']['use_rgb_feat']
+
+    if use_rgb_feat:
+        # Global mode: 4 inputs - use score_net directly
+        export_model = score_net
+    else:
+        # Pointwise mode: 3 inputs - wrap to accept (pts_feat, sampled_pose, t)
+        class ScoreNetExportWrapperPointwise(nn.Module):
+            def __init__(self, score_net):
+                super().__init__()
+                self.score_net = score_net
+
+            def forward(self, pts_feat, sampled_pose, t):
+                # Call original forward with rgb_feat=None
+                return self.score_net(pts_feat, rgb_feat=None, sampled_pose=sampled_pose, t=t)
+
+        export_model = ScoreNetExportWrapperPointwise(score_net)
+        export_model.eval()
+
     # Export to ONNX
     onnx_path = output_dir / "scorenet.onnx"
     print(f"\nExporting to {onnx_path}...")
@@ -288,14 +338,21 @@ def export_score_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu',
     input_names = [inp['name'] for inp in input_info['inputs']]
     output_names = [out['name'] for out in input_info['outputs']]
 
+    dynamic_axes = {
+        'pts_feat': {0: 'batch_size'},
+        'sampled_pose': {0: 'batch_size'},
+        't': {0: 'batch_size'},
+        'score': {0: 'batch_size'}
+    }
+
     # No dynamic_axes for fixed batch_size OM models
     torch.onnx.export(
-        score_net,
+        export_model,
         tuple(dummy_inputs),
         str(onnx_path),
         input_names=input_names,
         output_names=output_names,
-        dynamic_axes=None,  # Fixed batch_size for OM
+        dynamic_axes=dynamic_axes,  # Fixed batch_size for OM
         opset_version=17,
         verbose=False,
         export_params=True,

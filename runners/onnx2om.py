@@ -43,12 +43,14 @@ def convert_onnx_to_om(
     # Auto-detect batch_size from metadata
     metadata_path = onnx_path.parent / f"{onnx_path.stem}_metadata.json"
     detected_batch_size = None
+    use_rgb_feat = True  # Default assumption
 
     if metadata_path.exists():
         import json
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
         detected_batch_size = metadata.get('config', {}).get('om_batch_size', None)
+        use_rgb_feat = metadata.get('metadata', {}).get('use_rgb_feat', True)
 
     # Determine batch size to use
     if batch_size is None:
@@ -141,6 +143,7 @@ def convert_onnx_to_om(
     #     axes:         [batch_size, 3, 3] - rotation matrices
 
     # Set input shapes based on model type
+    is_dynamic = False
     if model_type == 'pointnet2_scorenet':
         input_shapes = {
             'pts': f"{batch_size},1024,3",
@@ -149,16 +152,33 @@ def convert_onnx_to_om(
             't': f"{batch_size},1"
         }
     elif model_type == 'pointnet2':
+        batch_size = [3,4,16]
+        if isinstance(batch_size, list):
+            is_dynamic = True
+
         input_shapes = {
-            'pts': f"{batch_size},1024,3",
-            'rgb_feat': f"{batch_size},1024,384"
+            'pts': f"{batch_size if not is_dynamic else -1},1024,3",
+            'rgb_feat': f"{batch_size if not is_dynamic else -1},1024,384"
         }
     elif model_type in ['score', 'energy']:
-        input_shapes = {
-            'pts_feat': f"{batch_size},1024",
-            'sampled_pose': f"{batch_size},9",
-            't': f"{batch_size},1"
-        }
+        batch_size = [150,200,800]
+        if isinstance(batch_size, list):
+            is_dynamic = True
+        # Build input shapes based on dino mode
+        if use_rgb_feat:
+            input_shapes = {
+                'pts_feat': f"{batch_size if not is_dynamic else -1},1024",
+                'rgb_feat': f"{batch_size if not is_dynamic else -1},384",
+                'sampled_pose': f"{batch_size if not is_dynamic else -1},9",
+                't': f"{batch_size if not is_dynamic else -1},1"
+            }
+        else:
+            # Pointwise mode: rgb_feat is not used
+            input_shapes = {
+                'pts_feat': f"{batch_size if not is_dynamic else -1},1024",
+                'sampled_pose': f"{batch_size if not is_dynamic else -1},9",
+                't': f"{batch_size if not is_dynamic else -1},1"
+            }
     elif model_type == 'scale':
         input_shapes = {
             'pts_feat': f"{batch_size},1024",
@@ -169,6 +189,8 @@ def convert_onnx_to_om(
         return False
     input_shape_str = ";".join([f"{k}:{v}" for k, v in input_shapes.items()])
 
+    if is_dynamic:
+        dynamic_batch_size = f"{','.join([str(i) for i in batch_size])}"
     atc_cmd = [
         "atc",
         "--framework=5",
@@ -177,7 +199,8 @@ def convert_onnx_to_om(
         "--input_format=NCHW",
         f"--input_shape={input_shape_str}",
         "--log=error",
-        f"--soc_version={soc_version}"
+        f"--soc_version={soc_version}",
+        f"--dynamic_batch_size={dynamic_batch_size}" if is_dynamic else ""
     ]
 
     # Run ATC conversion
