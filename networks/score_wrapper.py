@@ -45,24 +45,30 @@ class ScoreNetworkWrapper(nn.Module):
         score: [batch_size, 9] - Score/gradient for the given pose
     """
 
-    def __init__(self, checkpoint_path, device='npu:0'):
+    def __init__(self, checkpoint_path, device='npu:0', pointnet2_om_path=None):
         """
         Initialize ScoreNetworkWrapper with a trained checkpoint.
 
         Args:
             checkpoint_path: Path to ScoreNet checkpoint (.pth or .om)
             device: Device to load model on
+            pointnet2_om_path: Optional path to PointNet2 OM model for unified pts_feat extraction
         """
         super().__init__()
 
         self.checkpoint_path = Path(checkpoint_path)
         self.device = device
         self.is_om = self.checkpoint_path.suffix.lower() == '.om'
+        self.pointnet2_om = None  # Will be loaded if pointnet2_om_path provided
 
         if self.is_om:
             self._load_om_model()
         else:
             self._load_pytorch_model()
+
+        # Optionally load PointNet2 OM for unified pts_feat extraction
+        if pointnet2_om_path is not None:
+            self.pointnet2_om = create_pointnet2_encoder(pointnet2_om_path, device)
 
     def _load_pytorch_model(self):
         """Load PyTorch model from .pth checkpoint."""
@@ -220,6 +226,30 @@ class ScoreNetworkWrapper(nn.Module):
             data['t']
         )
 
+    def extract_pts_feat(self, pts, rgb_feat):
+        """
+        Extract point cloud features using PointNet2 encoder.
+
+        This method provides a unified interface that internally uses:
+        - PyTorch PointNet2 (if self.is_om=False or no OM model loaded)
+        - OM PointNet2 (if pointnet2_om is available)
+
+        Args:
+            pts: [batch_size, 1024, 3] - Point cloud coordinates
+            rgb_feat: [batch_size, 1024, 384] - DINOv2 features
+
+        Returns:
+            pts_feat: [batch_size, 1024] - Encoded point cloud features
+        """
+        if self.pointnet2_om is not None:
+            # Use OM PointNet2 encoder
+            return self.pointnet2_om(pts, rgb_feat)
+        else:
+            # Use PyTorch PointNet2 encoder
+            with torch.no_grad():
+                pointcloud = torch.cat([pts, rgb_feat], dim=-1)
+                return self.pts_encoder(pointcloud)
+
 
 class ODESamplerExternal:
     """
@@ -371,18 +401,19 @@ class ODESamplerExternal:
         return xs.permute(1, 0, 2), x
 
 
-def create_score_network(checkpoint_path, device='npu:0'):
+def create_score_network(checkpoint_path, device='npu:0', pointnet2_om_path=None):
     """
     Factory function to create ScoreNetworkWrapper.
 
     Args:
         checkpoint_path: Path to ScoreNet checkpoint
         device: Device to load model on
+        pointnet2_om_path: Optional path to PointNet2 OM model for unified pts_feat extraction
 
     Returns:
         ScoreNetworkWrapper instance
     """
-    return ScoreNetworkWrapper(checkpoint_path, device)
+    return ScoreNetworkWrapper(checkpoint_path, device, pointnet2_om_path)
 
 
 def create_ode_sampler(score_network, sde, device='npu:0'):

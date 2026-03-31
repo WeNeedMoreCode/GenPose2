@@ -25,7 +25,7 @@ from ipdb import set_trace
 
 from networks.posenet_agent import PoseNet
 from networks.reward import sort_poses_by_energy, ranking_loss
-from networks.score_wrapper import create_score_network, create_ode_sampler, create_pointnet2_encoder
+from networks.score_wrapper import create_score_network, create_ode_sampler
 from networks.gf_algorithms.sde import init_sde
 from datasets.datasets_omni6dpose import Omni6DPoseDataSet, array_to_SymLabel, array_to_CameraIntrinsicsBase, process_batch
 from utils.metrics import get_rot_matrix
@@ -237,13 +237,14 @@ def inference_score(save_path):
 
 def inference_score_decoupled(save_path):
     """
-    Decoupled version of inference_score using ScoreNetworkWrapper and ODESamplerExternal.
+    Unified decoupled inference using ScoreNetworkWrapper and ODESamplerExternal.
 
-    This version uses the same ODE sampling logic as the original code,
-    but with the Score Network as a separate component. This enables:
-    - Future ONNX export of Score Network
-    - External implementation of ODE sampling loop
-    - Same accuracy as original (100%)
+    Supports both PyTorch and OM models:
+    - PyTorch: Uses internal PyTorch PointNet2 encoder
+    - OM: Uses separate PointNet2 OM + ScoreNet OM (if available)
+
+    This unified interface enables direct comparison between PyTorch and OM outputs
+    for debugging precision issues.
 
     Args:
         save_path: Path to save cached results
@@ -254,11 +255,35 @@ def inference_score_decoupled(save_path):
     # Initialize SDE components
     prior_fn, marginal_prob_fn, sde_fn, sampling_eps, T = init_sde('ve')
 
-    # Create Score Network wrapper (decoupled from ODE sampling)
+    # Auto-detect and load PointNet2 OM if available
+    is_om_model = cfg.pretrained_score_model_path.endswith('.om')
+    pointnet2_om_path = None
+    use_pointnet2_om = False
+
+    if is_om_model:
+        pointnet2_om_path = getattr(cfg, 'pretrained_pointnet2_model_path',
+                                      None) or './onnx_models/pointnet2.om'
+        if os.path.exists(pointnet2_om_path):
+            use_pointnet2_om = True
+            print(f"\nUsing PointNet2 OM: {pointnet2_om_path}")
+
+    # Create Score Network wrapper (automatically uses OM or PyTorch)
     score_net = create_score_network(
         checkpoint_path=cfg.pretrained_score_model_path,
-        device=cfg.device
+        device=cfg.device,
+        pointnet2_om_path=pointnet2_om_path  # Pass None for PyTorch, path for OM
     )
+
+    # Print model type info
+    if score_net.is_om:
+        print(f"ScoreNet mode: OM ({cfg.pretrained_score_model_path})")
+        if use_pointnet2_om:
+            print(f"PointNet2 mode: OM ({pointnet2_om_path})")
+        else:
+            print(f"PointNet2 mode: PyTorch (internal)")
+    else:
+        print(f"ScoreNet mode: PyTorch ({cfg.pretrained_score_model_path})")
+        print(f"PointNet2 mode: PyTorch (internal)")
 
     # Create ODE sampler with the Score Network
     sampler = create_ode_sampler(
@@ -271,8 +296,8 @@ def inference_score_decoupled(save_path):
     all_score_feature = []
     total_samples = 0
 
-    print("Running decoupled score inference...")
-    for i, test_batch in enumerate(tqdm(dataloader, desc="score sampling (decoupled)")):
+    print(f"\nRunning unified decoupled inference ({'OM' if score_net.is_om else 'PyTorch'})...")
+    for i, test_batch in enumerate(tqdm(dataloader, desc="score sampling")):
         torch.npu.synchronize()
         start_time = time.time()
 
@@ -287,165 +312,26 @@ def inference_score_decoupled(save_path):
         if rgb_feat is not None:
             batch_sample['precomputed_rgb_feat'] = rgb_feat
 
-        # Extract point cloud features using the Score Network's internal encoder
+        # Extract point cloud features using unified interface
+        # Automatically uses OM PointNet2 (if available) or PyTorch PointNet2
         with torch.no_grad():
-            pts_feat = score_net.net(batch_sample, mode='pts_feature')
-            rgb_feat_internal = score_net.net(batch_sample, mode='rgb_feature')
-
-        # Get batch info
-        bs = batch_sample['pts'].shape[0]
-        pose_dim = get_pose_dim(cfg.pose_mode)
-        pts_center = batch_sample.get('pts_center', None)
-
-        # Generate random initial values for all repeats at once (same as original)
-        # This avoids manual_seed(0) being called multiple times in ve_prior
-        init_x_all = prior_fn((bs, cfg.eval_repeat_num, pose_dim), T=cfg.T0).to(cfg.device)
-
-        # Repeat features and init_x to process all at once (same as original)
-        # pts_feat: [bs, 1024] -> [bs*repeat_num, 1024]
-        pts_feat_repeated = pts_feat.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
-        rgb_feat_repeated = None if rgb_feat_internal is None else \
-            rgb_feat_internal.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
-        init_x_repeated = init_x_all.view(bs * cfg.eval_repeat_num, pose_dim)
-        pts_center_repeated = None if pts_center is None else \
-            pts_center.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
-
-        # Single call to sampler for all repeats (same as original)
-        with torch.no_grad():
-            _, sampled_pose = sampler.sample(
-                pts_feat=pts_feat_repeated,
-                rgb_feat=rgb_feat_repeated,
-                batch_size=bs * cfg.eval_repeat_num,
-                pose_dim=pose_dim,
-                T=cfg.T0,
-                eps=sampling_eps,
-                rtol=1e-5,
-                atol=1e-5,
-                denoise=True,
-                init_x=init_x_repeated,
-                pts_center=pts_center_repeated
+            pts_feat = score_net.extract_pts_feat(
+                pts=batch_sample['pts'],
+                rgb_feat=rgb_feat
             )
 
-        # Reshape result from [bs*repeat_num, pose_dim] to [bs, repeat_num, pose_dim]
-        pred_pose = sampled_pose.view(bs, cfg.eval_repeat_num, pose_dim)
-
-        # Save pred_pose (9-dim rot_matrix format), same as original
-        all_pred_pose.append(pred_pose)
-        all_score_feature.append({
-            'pts_feat': pts_feat.cpu(),
-            'rgb_feat': (None if rgb_feat_internal is None else rgb_feat_internal.cpu()),
-        })
-
-        torch.npu.synchronize()
-        elapsed = time.time() - start_time
-        perf_stats['score_time'].append(elapsed)
-        total_samples += pred_pose.shape[0]
-        perf_stats['score_samples'] = total_samples
-
-        if i % 4 == 3:
-            gc.collect()
-
-    pickle.dump((all_pred_pose, all_score_feature), open(save_path, 'wb'))
-    print("Decoupled score inference complete!")
-
-
-def inference_score_decoupled_om(save_path):
-    """
-    Decoupled inference using separate PointNet2 OM and ScoreNet OM models.
-
-    This version uses:
-    1. PointNet2 OM (bs=16) to extract point cloud features
-    2. ScoreNet OM (bs=800) for ODE sampling
-
-    This provides better performance than the end-to-end PointNet2+ScoreNet OM model
-    while maintaining compatibility with OM deployment.
-
-    Args:
-        save_path: Path to save cached results
-    """
-    if os.path.exists(save_path):
-        return
-
-    # Initialize SDE components
-    prior_fn, marginal_prob_fn, sde_fn, sampling_eps, T = init_sde('ve')
-
-    # Load PointNet2 OM model (for feature extraction)
-    pointnet2_om_path = getattr(cfg, 'pretrained_pointnet2_model_path',
-                                  None) or './onnx_models/pointnet2.om'
-    print(f"\nLoading PointNet2 OM model: {pointnet2_om_path}")
-    pointnet2_encoder = create_pointnet2_encoder(
-        checkpoint_path=pointnet2_om_path,
-        device=cfg.device
-    )
-
-    # Verify PointNet2 OM configuration
-    if hasattr(pointnet2_encoder, 'metadata') and pointnet2_encoder.metadata:
-        pn2_batch_size = pointnet2_encoder.metadata.get('config', {}).get('om_batch_size', None)
-        print(f"PointNet2 OM batch_size: {pn2_batch_size}")
-        if pn2_batch_size and pn2_batch_size != cfg.batch_size:
-            print(f"Warning: PointNet2 OM batch_size ({pn2_batch_size}) != cfg.batch_size ({cfg.batch_size})")
-
-    # Create Score Network OM wrapper (for ODE sampling)
-    score_net = create_score_network(
-        checkpoint_path=cfg.pretrained_score_model_path,
-        device=cfg.device
-    )
-
-    # Verify it's an OM model
-    if not score_net.is_om:
-        raise ValueError(f"inference_score_decoupled_om() requires ScoreNet OM model checkpoint")
-
-    # Verify ScoreNet OM configuration
-    _verify_om_config(score_net)
-
-    # Create ODE sampler with the Score Network OM
-    sampler = create_ode_sampler(
-        score_network=score_net,
-        sde={'prior_fn': prior_fn, 'sde_fn': sde_fn},
-        device=cfg.device
-    )
-
-    all_pred_pose = []
-    all_score_feature = []
-    total_samples = 0
-
-    print("Running decoupled OM inference (PointNet2 OM + ScoreNet OM)...")
-    for i, test_batch in enumerate(tqdm(dataloader, desc="score sampling (decoupled OM)")):
-        torch.npu.synchronize()
-        start_time = time.time()
-
-        batch_sample = process_batch(
-            batch_sample=test_batch,
-            device=cfg.device,
-            pose_mode=cfg.pose_mode,
-        )
-
-        # Extract DINOv2 features as preprocessing
-        rgb_feat = extract_dino_features(batch_sample)
-        if rgb_feat is not None:
-            batch_sample['precomputed_rgb_feat'] = rgb_feat
-
         # Get batch info
         bs = batch_sample['pts'].shape[0]
         pose_dim = get_pose_dim(cfg.pose_mode)
         pts_center = batch_sample.get('pts_center', None)
-
-        # Extract point cloud features using PointNet2 OM
-        # PointNet2 OM processes bs=16 samples
-        with torch.no_grad():
-            pts_feat = pointnet2_encoder(
-                pts=batch_sample['pts'],           # [bs, 1024, 3]
-                rgb_feat=rgb_feat                  # [bs, 1024, 384]
-            )  # -> [bs, 1024]
 
         # Generate random initial values for all repeats at once
         init_x_all = prior_fn((bs, cfg.eval_repeat_num, pose_dim), T=cfg.T0).to(cfg.device)
 
         # Repeat features and init_x to process all at once
-        # pts_feat: [bs, 1024] -> [bs*repeat_num, 1024]
         pts_feat_repeated = pts_feat.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
 
-        # No need to repeat rgb_feat - ScoreNet OM doesn't use it in pointwise mode
+        # In pointwise mode, rgb_feat is already fused into pts_feat, so pass None
         rgb_feat_repeated = None
 
         init_x_repeated = init_x_all.view(bs * cfg.eval_repeat_num, pose_dim)
@@ -453,7 +339,6 @@ def inference_score_decoupled_om(save_path):
             pts_center.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
 
         # Single call to sampler for all repeats
-        # ScoreNet OM processes bs*repeat_num=800 samples
         with torch.no_grad():
             _, sampled_pose = sampler.sample(
                 pts_feat=pts_feat_repeated,
@@ -472,7 +357,7 @@ def inference_score_decoupled_om(save_path):
         # Reshape result from [bs*repeat_num, pose_dim] to [bs, repeat_num, pose_dim]
         pred_pose = sampled_pose.view(bs, cfg.eval_repeat_num, pose_dim)
 
-        # Save pred_pose (9-dim rot_matrix format)
+        # Save pred_pose and features
         all_pred_pose.append(pred_pose)
         all_score_feature.append({
             'pts_feat': pts_feat.cpu(),
@@ -489,327 +374,8 @@ def inference_score_decoupled_om(save_path):
             gc.collect()
 
     pickle.dump((all_pred_pose, all_score_feature), open(save_path, 'wb'))
-    print("Decoupled OM inference complete!")
+    print(f"Unified decoupled inference complete! ({'OM' if score_net.is_om else 'PyTorch'})")
 
-
-def _verify_om_config(score_net):
-    """
-    Verify that current inference configuration matches the OM model's export configuration.
-
-    Args:
-        score_net: ScoreNetworkWrapper with OM model
-
-    Raises:
-        ValueError: If configuration doesn't match
-    """
-    if not hasattr(score_net, 'metadata') or score_net.metadata is None:
-        print("Warning: No metadata found, cannot verify configuration")
-        return
-
-    export_config = score_net.metadata.get('config', {})
-    om_batch_size = export_config.get('om_batch_size', None)
-    export_bs = export_config.get('export_config', {}).get('batch_size', None)
-    export_rep = export_config.get('export_config', {}).get('eval_repeat_num', None)
-
-    if om_batch_size is None:
-        print("Warning: om_batch_size not found in metadata")
-        return
-
-    # Current inference configuration
-    infer_bs = cfg.batch_size
-    infer_rep = cfg.eval_repeat_num
-    expected_batch = infer_bs * infer_rep
-
-    print(f"\n{'='*60}")
-    print(f"OM Configuration Verification")
-    print(f"{'='*60}")
-    print(f"Export config:")
-    print(f"  batch_size:     {export_bs if export_bs else 'unknown'}")
-    print(f"  eval_repeat_num: {export_rep if export_rep else 'unknown'}")
-    print(f"  om_batch_size:  {om_batch_size}")
-    print(f"\nInference config:")
-    print(f"  batch_size:     {infer_bs}")
-    print(f"  eval_repeat_num: {infer_rep}")
-    print(f"  expected_batch:  {expected_batch}")
-
-    # Verify batch size matches
-    if expected_batch != om_batch_size:
-        print(f"\n⚠️  CONFIG MISMATCH!")
-        print(f"  Export om_batch_size: {om_batch_size}")
-        print(f"  Inference batch size:  {expected_batch} = {infer_bs} × {infer_rep}")
-        print(f"\nSolutions:")
-        print(f"  1. Update inference config: batch_size={infer_bs}, eval_repeat_num={infer_rep}")
-        print(f"     such that batch_size × eval_repeat_num = {om_batch_size}")
-        print(f"\n  2. Re-export ONNX with correct om_batch_size:")
-        print(f"     python runners/export_onnx.py --agent_type pointnet2_scorenet \\")
-        print(f"       --om_batch_size {expected_batch}")
-        print(f"{'='*60}\n")
-        raise ValueError(
-            f"Configuration mismatch: OM model expects batch_size={om_batch_size}, "
-            f"but inference config gives batch_size={expected_batch} ({infer_bs}×{infer_rep})"
-        )
-    else:
-        print(f"\n✓ Configuration matches!")
-        print(f"{'='*60}\n")
-
-def inference_pointnet2_scorenet(save_path):
-    """
-    End-to-end inference using PointNet2+ScoreNet OM model.
-
-    This version uses the end-to-end OM model (PointNet2 + ScoreNet combined).
-    The OM model takes raw point cloud and RGB features as input, and outputs score directly.
-    The ODE sampler calls the OM model in each iteration.
-
-    Args:
-        save_path: Path to save cached results
-    """
-    if os.path.exists(save_path):
-        return
-
-    # Initialize SDE components
-    prior_fn, marginal_prob_fn, sde_fn, sampling_eps, T = init_sde('ve')
-
-    # Create Score Network wrapper (OM model)
-    score_net = create_score_network(
-        checkpoint_path=cfg.pretrained_score_model_path,
-        device=cfg.device
-    )
-
-    # Verify it's an OM model
-    if not score_net.is_om:
-        raise ValueError(f"inference_pointnet2_scorenet() requires an OM model checkpoint, "
-                        f"but got: {cfg.pretrained_score_model_path}")
-
-    # Verify configuration matches export settings
-    _verify_om_config(score_net)
-
-    all_pred_pose = []
-    all_score_feature = []
-    total_samples = 0
-
-    print("Running end-to-end PointNet2+ScoreNet OM inference...")
-    for i, test_batch in enumerate(tqdm(dataloader, desc="score sampling (PointNet2+ScoreNet OM)")):
-        torch.npu.synchronize()
-        start_time = time.time()
-
-        batch_sample = process_batch(
-            batch_sample=test_batch,
-            device=cfg.device,
-            pose_mode=cfg.pose_mode,
-        )
-
-        # Extract DINOv2 features as preprocessing
-        rgb_feat = extract_dino_features(batch_sample)
-
-        # Get batch info
-        bs = batch_sample['pts'].shape[0]
-        pose_dim = get_pose_dim(cfg.pose_mode)
-        pts_center = batch_sample.get('pts_center', None)
-
-        # For end-to-end OM model, we need to run ODE sampling differently
-        # because the OM model takes raw pts + rgb_feat as input each time
-        pts = batch_sample['pts']  # [bs, 1024, 3]
-
-        # Generate random initial values for all repeats at once
-        init_x_all = prior_fn((bs, cfg.eval_repeat_num, pose_dim), T=cfg.T0).to(cfg.device)
-        init_x_repeated = init_x_all.view(bs * cfg.eval_repeat_num, pose_dim)
-
-        # Expand pts and rgb_feat for all repeats
-        # pts: [bs, 1024, 3] -> [bs*repeat_num, 1024, 3]
-        pts_repeated = pts.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1, 1).view(bs * cfg.eval_repeat_num, -1, 3)
-        if rgb_feat is not None:
-            rgb_feat_repeated = rgb_feat.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1, 1).view(bs * cfg.eval_repeat_num, -1, rgb_feat.shape[-1])
-        else:
-            rgb_feat_repeated = None
-
-        # Run ODE sampling with end-to-end OM model
-        with torch.no_grad():
-            sampled_pose = _ode_sample_end_to_end(
-                score_net=score_net,
-                pts=pts_repeated,
-                rgb_feat=rgb_feat_repeated,
-                init_x=init_x_repeated,
-                prior_fn=prior_fn,
-                sde_fn=sde_fn,
-                batch_size=bs * cfg.eval_repeat_num,
-                pose_dim=pose_dim,
-                T=cfg.T0,
-                eps=sampling_eps,
-                pts_center=pts_center
-            )
-
-        # Reshape result from [bs*repeat_num, pose_dim] to [bs, repeat_num, pose_dim]
-        pred_pose = sampled_pose.view(bs, cfg.eval_repeat_num, pose_dim)
-
-        # Save pred_pose (9-dim rot_matrix format)
-        all_pred_pose.append(pred_pose)
-        # For end-to-end OM model, we don't have intermediate pts_feat
-        # Store raw pts and rgb_feat for downstream use
-        all_score_feature.append({
-            'pts': pts.cpu(),
-            'rgb_feat': (None if rgb_feat is None else rgb_feat.cpu()),
-        })
-
-        torch.npu.synchronize()
-        elapsed = time.time() - start_time
-        perf_stats['score_time'].append(elapsed)
-        total_samples += pred_pose.shape[0]
-        perf_stats['score_samples'] = total_samples
-
-        if i % 4 == 3:
-            gc.collect()
-
-    pickle.dump((all_pred_pose, all_score_feature), open(save_path, 'wb'))
-    print("End-to-end PointNet2+ScoreNet OM inference complete!")
-
-def _ode_sample_end_to_end(score_net, pts, rgb_feat, init_x, prior_fn, sde_fn,
-                           batch_size, pose_dim, T, eps, pts_center=None,
-                           rtol=1e-5, atol=1e-5, denoise=True):
-    """
-    ODE sampling for end-to-end PointNet2+ScoreNet OM model.
-
-    This is similar to ODESamplerExternal.sample(), but calls the end-to-end
-    OM model with raw pts and rgb_feat in each iteration.
-
-    NOTE: OM model has fixed batch size, so we need to split the batch
-    and process in chunks. The OM batch size is read from metadata.
-
-    Args:
-        score_net: ScoreNetworkWrapper with OM model
-        pts: [batch_size, 1024, 3] - Raw point cloud
-        rgb_feat: [batch_size, 1024, 384] or None - DINOv2 features
-        init_x: [batch_size, pose_dim] - Initial pose
-        prior_fn: SDE prior function
-        sde_fn: SDE coefficient function
-        batch_size: Batch size
-        pose_dim: Pose dimension
-        T: Start time
-        eps: End time
-        pts_center: Point cloud center for translation
-
-    Returns:
-        sampled_pose: [batch_size, pose_dim] - Final sampled pose
-    """
-    import numpy as np
-    from scipy import integrate
-
-    init_x = init_x.cpu().numpy()
-    shape = init_x.shape
-
-    # Read OM batch size from metadata (default to 1 if not available)
-    if hasattr(score_net, 'metadata') and score_net.metadata is not None:
-        om_batch_size = score_net.metadata.get('config', {}).get('om_batch_size', 1)
-    else:
-        om_batch_size = 1
-    print(f"Using OM batch size: {om_batch_size} (total batch: {batch_size})")
-
-    # Calculate number of chunks needed
-    num_chunks = (batch_size + om_batch_size - 1) // om_batch_size
-
-    def ode_func(t, x):
-        """ODE function for use by the ODE solver."""
-        x_tensor = torch.tensor(x.reshape(-1, pose_dim), dtype=torch.float32, device=score_net.device)
-        time_steps = torch.ones(batch_size, device=score_net.device).unsqueeze(-1) * t
-        drift, diffusion = sde_fn(torch.tensor(t))
-        drift = drift.cpu().numpy()
-        diffusion = diffusion.cpu().numpy()
-
-        # Call end-to-end OM model with raw pts and rgb_feat
-        # Split into chunks to match OM model's batch size
-        score_list = []
-        for chunk_idx in range(num_chunks):
-            start_idx = chunk_idx * om_batch_size
-            end_idx = min((chunk_idx + 1) * om_batch_size, batch_size)
-
-            pts_chunk = pts[start_idx:end_idx]  # [om_batch_size, 1024, 3]
-            if rgb_feat is not None:
-                rgb_feat_chunk = rgb_feat[start_idx:end_idx]
-            else:
-                rgb_feat_chunk = torch.zeros(om_batch_size, 1024, 384, device=score_net.device)
-
-            x_chunk = x_tensor[start_idx:end_idx]  # [om_batch_size, pose_dim]
-            t_chunk = time_steps[start_idx:end_idx]  # [om_batch_size, 1]
-
-            with torch.no_grad():
-                score_chunk = score_net(
-                    pts_feat=pts_chunk,
-                    rgb_feat=rgb_feat_chunk,
-                    sampled_pose=x_chunk,
-                    t=t_chunk
-                )
-            score_list.append(score_chunk)
-
-        score = torch.cat(score_list, dim=0)  # [batch_size, pose_dim]
-        score_np = score.cpu().numpy().reshape((-1,))
-
-        return drift - 0.5 * (diffusion**2) * score_np
-
-    # Run ODE solver
-    res = integrate.solve_ivp(
-        ode_func, (T, eps), init_x.reshape(-1),
-        rtol=rtol, atol=atol, method='RK45'
-    )
-
-    # Extract results
-    xs = torch.tensor(res.y, device=score_net.device, dtype=torch.float32).T.view(-1, batch_size, pose_dim)
-    x = torch.tensor(res.y[:, -1], device=score_net.device, dtype=torch.float32).reshape(shape)
-
-    # Denoising step (if requested)
-    if denoise:
-        from utils.misc import normalize_rotation
-        vec_eps = torch.ones((x.shape[0], 1), device=x.device) * eps
-        drift, diffusion = sde_fn(vec_eps)
-
-        # Split into chunks for denoising as well
-        score_list = []
-        for chunk_idx in range(num_chunks):
-            start_idx = chunk_idx * om_batch_size
-            end_idx = min((chunk_idx + 1) * om_batch_size, batch_size)
-
-            pts_chunk = pts[start_idx:end_idx]
-            if rgb_feat is not None:
-                rgb_feat_chunk = rgb_feat[start_idx:end_idx]
-            else:
-                rgb_feat_chunk = torch.zeros(om_batch_size, 1024, 384, device=score_net.device)
-
-            x_chunk = x[start_idx:end_idx]
-            t_chunk = vec_eps[start_idx:end_idx]
-
-            with torch.no_grad():
-                score_chunk = score_net(
-                    pts_feat=pts_chunk,
-                    rgb_feat=rgb_feat_chunk,
-                    sampled_pose=x_chunk.float(),
-                    t=t_chunk
-                )
-            score_list.append(score_chunk)
-
-        score = torch.cat(score_list, dim=0)
-        drift = drift - diffusion**2 * score
-        mean_x = x + drift * ((1 - eps) / 1000)
-        x = mean_x
-
-    # Normalize rotation
-    from utils.misc import normalize_rotation
-    pose_mode = score_net.cfg.pose_mode
-
-    num_steps = xs.shape[0]
-    xs = xs.reshape(batch_size * num_steps, -1)
-    xs[:, :-3] = normalize_rotation(xs[:, :-3], pose_mode)
-    xs = xs.reshape(num_steps, batch_size, -1)
-    if pts_center is not None:
-        # pts_center was [bs, 3], need to expand to [bs*repeat_num, 3]
-        repeat_num = batch_size // pts_center.shape[0]
-        pts_center_expanded = pts_center.unsqueeze(1).repeat(1, repeat_num, 1).view(batch_size, 3)
-        xs[:, :, -3:] += pts_center_expanded.unsqueeze(0).repeat(xs.shape[0], 1, 1)
-
-    x[:, :-3] = normalize_rotation(x[:, :-3], pose_mode)
-    if pts_center is not None:
-        repeat_num = batch_size // pts_center.shape[0]
-        pts_center_expanded = pts_center.unsqueeze(1).repeat(1, repeat_num, 1).view(batch_size, 3)
-        x[:, -3:] += pts_center_expanded
-
-    return xs.permute(1, 0, 2), x
 
 def inference_energy(score_path, save_path):
     if os.path.exists(save_path):
@@ -1144,53 +710,33 @@ if __name__ == '__main__':
     score_model_name = '_'.join(cfg.pretrained_score_model_path.split('/')[-2:])
     score_save_path = f'results/evaluation_results/{cfg.result_dir}/score_prediction_{score_model_name}.pkl'
 
-    # Auto-detect model type: OM or PyTorch
+    # Auto-detect model type
     is_om_model = cfg.pretrained_score_model_path.endswith('.om')
 
-    # Check if using decoupled OM models (separate PointNet2 OM + ScoreNet OM)
-    use_decoupled_om = False
+    # For OM models, verify PointNet2 OM exists
     if is_om_model:
-        # Check if PointNet2 OM model exists
         pointnet2_om_path = getattr(cfg, 'pretrained_pointnet2_model_path',
                                       None) or './onnx_models/pointnet2.om'
-        if os.path.exists(pointnet2_om_path):
-            use_decoupled_om = True
+        if not os.path.exists(pointnet2_om_path):
+            raise FileNotFoundError(
+                f"PointNet2 OM not found: {pointnet2_om_path}\n"
+                f"Please export PointNet2 to OM first:\n"
+                f"  python runners/export_onnx.py --agent_type pointnet2\n"
+                f"  python runners/onnx2om.py --onnx_path ./onnx_models/pointnet2.onnx"
+            )
 
-    # Choose inference method
+    # Unified decoupled inference (works for both PyTorch and OM)
+    print("="*60)
     if is_om_model:
-        if use_decoupled_om:
-            # Decoupled OM: PointNet2 OM (bs=16) + ScoreNet OM (bs=800)
-            print("="*60)
-            print("Using DECOUPLED OM inference")
-            print(f"PointNet2 OM: {pointnet2_om_path}")
-            print(f"ScoreNet OM: {cfg.pretrained_score_model_path}")
-            print("Performance: Same as PyTorch (PointNet2 bs=16, ScoreNet bs=800)")
-            print("="*60)
-            inference_score_decoupled_om(score_save_path)
-        else:
-            # End-to-end PointNet2+ScoreNet OM model
-            print("="*60)
-            print("Using END-TO-END PointNet2+ScoreNet OM inference")
-            print(f"Model: {cfg.pretrained_score_model_path}")
-            print("Warning: Slower than decoupled OM (PointNet2 processes 800 samples)")
-            print("="*60)
-            inference_pointnet2_scorenet(score_save_path)
+        print("Using UNIFIED DECOUPLED OM inference")
+        print(f"ScoreNet OM: {cfg.pretrained_score_model_path}")
+        print(f"PointNet2 OM: {pointnet2_om_path}")
     else:
-        # PyTorch model: choose between original and decoupled
-        # Set use_decoupled=1 to use decoupled version
-        use_decoupled = 1
-
-        if use_decoupled:
-            print("="*60)
-            print("Using DECOUPLED inference (ScoreNetworkWrapper + ODESamplerExternal)")
-            print("Accuracy: 100% same as original (same RK45 solver)")
-            print("="*60)
-            inference_score_decoupled(score_save_path)
-        else:
-            print("="*60)
-            print("Using ORIGINAL inference (integrated PoseNet)")
-            print("="*60)
-            inference_score(score_save_path)
+        print("Using UNIFIED DECOUPLED PyTorch inference")
+        print(f"Model: {cfg.pretrained_score_model_path}")
+    print("This enables direct PyTorch vs OM comparison for debugging")
+    print("="*60)
+    inference_score_decoupled(score_save_path)
 
     aggregate_save_path = f'results/evaluation_results/{cfg.result_dir}/aggregated.pkl'
     if cfg.pretrained_energy_model_path is not None:
