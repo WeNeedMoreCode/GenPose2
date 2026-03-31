@@ -32,8 +32,8 @@ def get_pointnet2_input_info(cfg, batch_size=1):
     Get input dimensions for PointNet2 encoder.
 
     The PointNet2 encoder (Pointnet2ClsMSGFus) expects:
-        - pts: [batch_size, 1024, 3] - Point cloud coordinates
-        - rgb_feat: [batch_size, 1024, 384] - RGB features (DINOv2, pointwise mode)
+        - pointcloud: [batch_size, 1024, 387] - Concatenated pts + rgb_feat
+          where pts = [bs, 1024, 3] and rgb_feat = [bs, 1024, 384]
 
     Args:
         cfg: Configuration object
@@ -44,8 +44,7 @@ def get_pointnet2_input_info(cfg, batch_size=1):
     """
     return {
         'inputs': [
-            {'name': 'pts', 'shape': [1, 1024, 3], 'dtype': 'float32', 'format': 'point_cloud'},
-            {'name': 'rgb_feat', 'shape': [1, 1024, 384], 'dtype': 'float32', 'format': 'dino_features'},
+            {'name': 'pointcloud', 'shape': [1, 1024, 387], 'dtype': 'float32', 'format': 'concatenated_input'},
         ],
         'outputs': [
             {'name': 'pts_feat', 'shape': [1, 1024], 'dtype': 'float32'},
@@ -100,24 +99,10 @@ def export_pointnet2_to_onnx(checkpoint_path, output_dir, cfg, device='cpu', om_
     pts_encoder = agent.net.pts_encoder
     pts_encoder.eval()
 
-    # Create wrapper that matches the inference interface
-    # Pointnet2ClsMSGFus expects a single concatenated input [bs, 1024, 3+384]
-    # but for OM deployment we want separate inputs for flexibility
-    class PointNet2ExportWrapper(nn.Module):
-        def __init__(self, pts_encoder):
-            super().__init__()
-            self.pts_encoder = pts_encoder
-
-        def forward(self, pts, rgb_feat):
-            # Concatenate pts and rgb_feat pointwise
-            # pts: [bs, 1024, 3], rgb_feat: [bs, 1024, 384]
-            # pointcloud: [bs, 1024, 387]
-            pointcloud = torch.cat([pts, rgb_feat], dim=-1)
-            # Call the actual PointNet2 encoder
-            return self.pts_encoder(pointcloud)
-
-    export_model = PointNet2ExportWrapper(pts_encoder)
-    export_model.eval()
+    # Export the pts_encoder directly (no wrapper)
+    # It expects concatenated input: pointcloud [bs, 1024, 387]
+    # Caller should concatenate pts [bs, 1024, 3] and rgb_feat [bs, 1024, 384] before calling
+    export_model = pts_encoder
 
     # Get input info with specified batch_size
     input_info = get_pointnet2_input_info(cfg, batch_size=om_batch_size)
@@ -148,8 +133,7 @@ def export_pointnet2_to_onnx(checkpoint_path, output_dir, cfg, device='cpu', om_
     # Use dynamic_axes for dynamic batch size support
     # This allows OM conversion with --dynamic_batch_size
     dynamic_axes = {
-        'pts': {0: 'batch_size'},
-        'rgb_feat': {0: 'batch_size'},
+        'pointcloud': {0: 'batch_size'},
         'pts_feat': {0: 'batch_size'},
     }
 

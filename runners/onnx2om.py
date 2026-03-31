@@ -157,8 +157,7 @@ def convert_onnx_to_om(
             is_dynamic = True
 
         input_shapes = {
-            'pts': f"{batch_size if not is_dynamic else -1},1024,3",
-            'rgb_feat': f"{batch_size if not is_dynamic else -1},1024,384"
+            'pointcloud': f"{batch_size if not is_dynamic else -1},1024,387"
         }
     elif model_type in ['score', 'energy']:
         batch_size = [150,200,800]

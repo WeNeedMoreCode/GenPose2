@@ -133,12 +133,15 @@ class ScoreNetworkWrapper(nn.Module):
 
         # Load OM model
         print(f"Loading OM model: {self.checkpoint_path}")
-        self.om_session = InferSession(device_id, str(self.checkpoint_path))
+        self.score_net_om = InferSession(device_id, str(self.checkpoint_path))
         print(f"✓ OM model loaded successfully")
 
-        # Store dummy cfg for compatibility
-        self.cfg = get_config()
-        self.cfg.pose_mode = 'rot_matrix'
+        # Store cfg for compatibility (same as PyTorch mode)
+        cfg = get_config()
+        cfg.agent_type = 'score'
+        cfg.device = self.device
+        cfg.dino = 'pointwise'
+        self.cfg = cfg
 
     def forward(self, pts_feat, rgb_feat, sampled_pose, t):
         """
@@ -183,7 +186,7 @@ class ScoreNetworkWrapper(nn.Module):
             ])
 
             # Run OM inference
-            outputs = self.om_session.infer(inputs, mode="dymbatch")
+            outputs = self.score_net_om.infer(inputs, mode="dymbatch")
 
             # Convert back to torch tensor
             if isinstance(outputs, (list, tuple)) and len(outputs) == 1:
@@ -241,13 +244,17 @@ class ScoreNetworkWrapper(nn.Module):
         Returns:
             pts_feat: [batch_size, 1024] - Encoded point cloud features
         """
+        # Concatenate pts and rgb_feat before passing to encoder
+        # Both PyTorch and OM paths now expect concatenated input
+        with torch.no_grad():
+            pointcloud = torch.cat([pts, rgb_feat], dim=-1)
+
         if self.pointnet2_om is not None:
             # Use OM PointNet2 encoder
-            return self.pointnet2_om(pts, rgb_feat)
+            return self.pointnet2_om(pointcloud)
         else:
             # Use PyTorch PointNet2 encoder
             with torch.no_grad():
-                pointcloud = torch.cat([pts, rgb_feat], dim=-1)
                 return self.pts_encoder(pointcloud)
 
 
@@ -499,25 +506,21 @@ class PointNet2EncoderWrapper(nn.Module):
         self.om_session = InferSession(device_id, str(self.checkpoint_path))
         print(f"✓ PointNet2 OM model loaded successfully")
 
-    def forward(self, pts, rgb_feat):
+    def forward(self, pointcloud):
         """
         Forward pass of PointNet2 encoder.
 
         Args:
-            pts: [batch_size, 1024, 3] - Point cloud coordinates
-            rgb_feat: [batch_size, 1024, 384] - DINOv2 features
+            pointcloud: [batch_size, 1024, 387] - Concatenated pts + rgb_feat
 
         Returns:
             pts_feat: [batch_size, 1024] - Encoded point cloud features
         """
-        # Convert torch tensors to numpy
-        inputs = [
-            pts.cpu().numpy().astype(np.float32),
-            rgb_feat.cpu().numpy().astype(np.float32),
-        ]
+        # Convert torch tensor to numpy
+        input_data = pointcloud.cpu().numpy().astype(np.float32)
 
         # Run OM inference
-        outputs = self.om_session.infer(inputs, mode="dymbatch")
+        outputs = self.om_session.infer([input_data], mode="dymbatch")
 
         # Convert back to torch tensor
         if isinstance(outputs, (list, tuple)) and len(outputs) == 1:

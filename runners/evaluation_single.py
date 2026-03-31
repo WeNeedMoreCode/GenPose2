@@ -255,17 +255,9 @@ def inference_score_decoupled(save_path):
     # Initialize SDE components
     prior_fn, marginal_prob_fn, sde_fn, sampling_eps, T = init_sde('ve')
 
-    # Auto-detect and load PointNet2 OM if available
-    is_om_model = cfg.pretrained_score_model_path.endswith('.om')
-    pointnet2_om_path = None
-    use_pointnet2_om = False
-
-    if is_om_model:
-        pointnet2_om_path = getattr(cfg, 'pretrained_pointnet2_model_path',
+    pointnet2_om_path = getattr(cfg, 'pretrained_pointnet2_model_path',
                                       None) or './onnx_models/pointnet2.om'
-        if os.path.exists(pointnet2_om_path):
-            use_pointnet2_om = True
-            print(f"\nUsing PointNet2 OM: {pointnet2_om_path}")
+
 
     # Create Score Network wrapper (automatically uses OM or PyTorch)
     score_net = create_score_network(
@@ -274,16 +266,7 @@ def inference_score_decoupled(save_path):
         pointnet2_om_path=pointnet2_om_path  # Pass None for PyTorch, path for OM
     )
 
-    # Print model type info
-    if score_net.is_om:
-        print(f"ScoreNet mode: OM ({cfg.pretrained_score_model_path})")
-        if use_pointnet2_om:
-            print(f"PointNet2 mode: OM ({pointnet2_om_path})")
-        else:
-            print(f"PointNet2 mode: PyTorch (internal)")
-    else:
-        print(f"ScoreNet mode: PyTorch ({cfg.pretrained_score_model_path})")
-        print(f"PointNet2 mode: PyTorch (internal)")
+
 
     # Create ODE sampler with the Score Network
     sampler = create_ode_sampler(
