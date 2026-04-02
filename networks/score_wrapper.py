@@ -469,8 +469,6 @@ class PointNet2EncoderWrapper(nn.Module):
         self.device = device
         self.is_om = self.checkpoint_path.suffix.lower() == '.om'
 
-        if not self.is_om:
-            raise ValueError(f"PointNet2EncoderWrapper only supports OM models, got {checkpoint_path}")
 
         # Load metadata
         metadata_path = self.checkpoint_path.parent / f"{self.checkpoint_path.stem}_metadata.json"

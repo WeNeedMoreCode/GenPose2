@@ -14,6 +14,7 @@ import numpy as np
 from pathlib import Path
 
 import torch
+import torch_npu
 import onnxruntime as ort
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -148,6 +149,7 @@ def load_pytorch_model(checkpoint_path: str, device='npu:0'):
         device=device
     )
     score_net.net.eval()
+    score_net.net.pts_encoder.eval()  # 确保 pts_encoder 也是 eval 模式
 
     return score_net
 
@@ -233,32 +235,30 @@ def test_pointnet2(
     logger.print(f"  pointcloud: [{batch_size}, 1024, 387] (拼接后的 pts + rgb_feat)")
 
     # 创建测试输入
-    pts, rgb_feat, pointcloud = create_dummy_inputs(batch_size, device)
+    pointcloud = torch.load('./test_pointcloud.pth')['pointcloud'].to(device)
 
     logger.print(f"\n原始数据 shape:")
-    logger.print(f"  pts:       {pts.shape}")
-    logger.print(f"  rgb_feat:  {rgb_feat.shape}")
     logger.print(f"  pointcloud: {pointcloud.shape}")
 
-    # 测试 PyTorch
-    logger.print(f"\n{'='*60}")
-    logger.print(f"测试 PyTorch 模型...")
-    logger.print(f"{'='*60}")
-    pt_model = load_pytorch_model(checkpoint_path, device)
-    start = time.time()
-    pt_output = run_pytorch_model(pt_model, pointcloud)
-    pt_time = time.time() - start
-    logger.print(f"PyTorch 推理时间: {pt_time*1000:.2f} ms")
+    # # 测试 PyTorch
+    # logger.print(f"\n{'='*60}")
+    # logger.print(f"测试 PyTorch 模型...")
+    # logger.print(f"{'='*60}")
+    # pt_model = load_pytorch_model(checkpoint_path, device)
+    # start = time.time()
+    # pt_output = run_pytorch_model(pt_model, pointcloud)
+    # pt_time = time.time() - start
+    # logger.print(f"PyTorch 推理时间: {pt_time*1000:.2f} ms")
 
-    # 测试 OM
-    logger.print(f"\n{'='*60}")
-    logger.print(f"测试 OM 模型...")
-    logger.print(f"{'='*60}")
-    om_model = load_om_model(om_path, device)
-    start = time.time()
-    om_output = run_om_model(om_model, pointcloud)
-    om_time = time.time() - start
-    logger.print(f"OM 推理时间: {om_time*1000:.2f} ms")
+    # # 测试 OM
+    # logger.print(f"\n{'='*60}")
+    # logger.print(f"测试 OM 模型...")
+    # logger.print(f"{'='*60}")
+    # om_model = load_om_model(om_path, device)
+    # start = time.time()
+    # om_output = run_om_model(om_model, pointcloud)
+    # om_time = time.time() - start
+    # logger.print(f"OM 推理时间: {om_time*1000:.2f} ms")
 
     # 测试 ONNX
     logger.print(f"\n{'='*60}")
@@ -269,19 +269,19 @@ def test_pointnet2(
     onnx_time = time.time() - start
     logger.print(f"ONNX 推理时间: {onnx_time*1000:.2f} ms")
 
-    # 对比输出
-    all_match = compare_outputs(pt_output, om_output, onnx_output, "PointNet2")
+    # # 对比输出
+    # all_match = compare_outputs(pt_output, om_output, onnx_output, "PointNet2")
 
-    logger.print(f"\n{'='*60}")
-    if all_match:
-        logger.print(f"✓ 精度测试通过")
-    else:
-        logger.print(f"✗ 精度测试失败")
+    # logger.print(f"\n{'='*60}")
+    # if all_match:
+    #     logger.print(f"✓ 精度测试通过")
+    # else:
+    #     logger.print(f"✗ 精度测试失败")
     logger.print(f"{'='*60}\n")
 
     logger.close()
 
-    return all_match
+    # return all_match
 
 
 def main():

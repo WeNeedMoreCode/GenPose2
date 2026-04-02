@@ -17,7 +17,7 @@ from configs.config import get_config
 from utils.genpose_utils import encode_axes
 
 
-
+# pts_encoder走这里
 class GFObjectPose(nn.Module):
     dino_name = 'dinov2_vits14'
     dino_dim = 384
@@ -47,32 +47,9 @@ class GFObjectPose(nn.Module):
             self.embedding_dim = GFObjectPose.embedding_dim
         
         ''' encode pts '''
-        if self.cfg.pts_encoder == 'pointnet':
-            assert cfg.dino != 'pointwise' # not supported yet
-            self.pts_encoder = PointNetfeat(num_points=self.cfg.num_points, out_dim=1024)
-        elif self.cfg.pts_encoder == 'pointnet2':
-            if cfg.dino == 'pointwise':
-                self.pts_encoder = Pointnet2ClsMSGFus(self.dino_dim)
-            else:
-                self.pts_encoder = Pointnet2ClsMSG(0)
-        elif self.cfg.pts_encoder == 'pointnet_and_pointnet2':
-            assert cfg.dino != 'pointwise' # not supported yet
-            self.pts_pointnet_encoder = PointNetfeat(num_points=self.cfg.num_points, out_dim=1024)
-            self.pts_pointnet2_encoder = Pointnet2ClsMSG(0)
-            self.fusion_layer = nn.Linear(2048, 1024)
-            self.act = nn.ReLU()
-        else:
-            raise NotImplementedError
-        
-        ''' score network'''
-        # if self.cfg.sde_mode == 'edm':
-        #     self.pose_score_net = PoseDecoderNet(
-        #         self.marginal_prob_fn,
-        #         sigma_data=1.4148, 
-        #         pose_mode=self.cfg.pose_mode, 
-        #         regression_head=self.cfg.regression_head
-        #     )
-        # else:
+
+        self.pts_encoder = Pointnet2ClsMSGFus(self.dino_dim)
+
         per_point_feat = False
         if self.cfg.agent_type == 'score':
             self.pose_score_net = PoseScoreNet(

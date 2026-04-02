@@ -93,9 +93,6 @@ class PoseNet(nn.Module):
         else:
             net = self.get_network('ScaleNet')
         net = net.to(self.cfg.device)
-        if self.cfg.parallel:
-            device_ids = list(range(self.cfg.num_gpu))
-            net = nn.DataParallel(net, device_ids=device_ids).cuda()
         return net
     
 
