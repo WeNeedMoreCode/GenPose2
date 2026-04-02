@@ -10,9 +10,11 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from pathlib import Path
 from configs.config import get_config
 from networks.posenet_agent import PoseNet
+from networks.pts_encoder.pointnet2_utils.pointnet2 import pointnet2_utils
 
 
 class PointNet2WithIntermediates(nn.Module):
@@ -29,13 +31,24 @@ class PointNet2WithIntermediates(nn.Module):
         self.SA_modules = pts_encoder.SA_modules
 
         # 定义输出的顺序（用于 ONNX 导出）
-        # 每个 SA_module 保存：执行前的 l_features[i] 和执行后的 li_features
+        # SA_modules[0]: 逐步拆分
+        # SA_modules[1+]: 只保存 input/output
         self.output_keys = []
         num_sa_modules = len(self.SA_modules)
-        for i in range(num_sa_modules):
-            self.output_keys.append(f'sa_{i}_input')   # SA_module 执行前的输入
-            self.output_keys.append(f'sa_{i}_output')  # SA_module 执行后的输出
-        self.output_keys.append('pts_feat')            # 最终输出
+        # SA_modules[0] 细粒度
+        self.output_keys.extend([
+            'sa_0_input',        # 输入特征
+            'sa_0_fps_idx',      # FPS 采样索引
+            'sa_0_new_xyz',      # Gather 后的中心点坐标
+            'sa_0_grouped',      # Ball Query + Group 后的特征
+            'sa_0_mlp_out',      # MLP 后的特征（pool 前）
+            'sa_0_output',       # Max Pool 后的输出
+        ])
+        # SA_modules[1+]
+        for i in range(1, num_sa_modules):
+            self.output_keys.append(f'sa_{i}_input')
+            self.output_keys.append(f'sa_{i}_output')
+        self.output_keys.append('pts_feat')
 
     def _break_up_pc(self, pc):
         """从原始 pts_encoder 复制的方法"""
@@ -72,15 +85,41 @@ class PointNet2WithIntermediates(nn.Module):
         # 用于存储所有输出的字典
         outputs = {}
 
-        # first SA_module
+        # ============ SA_modules[0]: 手动逐步执行 ============
+        sa0 = self.SA_modules[0]
         outputs['sa_0_input'] = l_features[0].clone()
-        li_xyz, li_features, idx = self.SA_modules[0](l_xyz[0], l_features[0], return_idx=True)
-        l_xyz.append(li_xyz)
-        l_features.append(li_features)
+
+        # Step 1: FPS
+        fps_idx = pointnet2_utils.furthest_point_sample(l_xyz[0], sa0.npoint)
+        outputs['sa_0_fps_idx'] = fps_idx.clone()
+
+        # Step 2: Gather center points
+        xyz_flipped = l_xyz[0].transpose(1, 2).contiguous()
+        new_xyz = pointnet2_utils.gather_operation(xyz_flipped, fps_idx).transpose(1, 2).contiguous()
+        outputs['sa_0_new_xyz'] = new_xyz.clone()
+
+        # Step 3: Group (Ball Query + Grouping)
+        grouped_features = sa0.groupers[0](l_xyz[0], new_xyz, l_features[0])
+        outputs['sa_0_grouped'] = grouped_features.clone()
+
+        # Step 4: MLP
+        mlp_out = sa0.mlps[0](grouped_features)
+        outputs['sa_0_mlp_out'] = mlp_out.clone()
+
+        # Step 5: Max Pool
+        if sa0.pool_method == 'max_pool':
+            li_features = torch.amax(mlp_out, dim=3, keepdim=True)
+        elif sa0.pool_method == 'avg_pool':
+            li_features = F.avg_pool2d(mlp_out, kernel_size=[1, mlp_out.size(3)])
+        li_features = li_features.squeeze(-1)
         outputs['sa_0_output'] = li_features.clone()
 
+        l_xyz.append(new_xyz)
+        l_features.append(li_features)
+
+        # gather features 给下一个 SA_module 用
         features = torch.gather(features, 2,
-                    torch.unsqueeze(idx.type(torch.int64), 1).expand(-1, features.shape[1], -1))
+                    torch.unsqueeze(fps_idx.type(torch.int64), 1).expand(-1, features.shape[1], -1))
 
         # middle SA_modules
         for i in range(1, len(self.SA_modules) - 1):

@@ -144,6 +144,22 @@ def compare_intermediates(pt_results: dict, onnx_results: dict, output_keys: lis
             logger.print(f"\n  {key}: *** SHAPE 不匹配 *** PyTorch={pt.shape} vs ONNX={onnx.shape}")
             continue
 
+        # fps_idx 是 int64 索引，用精确匹配判断
+        if 'fps_idx' in key:
+            match = np.array_equal(pt, onnx)
+            diff_count = np.sum(pt != onnx)
+            logger.print(f"\n  {key}: shape={pt.shape} (int64 indices)")
+            logger.print(f"    完全匹配: {'YES' if match else 'NO'}")
+            if not match:
+                logger.print(f"    不匹配元素数: {diff_count} / {pt.size}")
+                # 打印前几个不匹配的位置
+                mismatches = np.where(pt != onnx)
+                n_show = min(5, len(mismatches[0]))
+                for j in range(n_show):
+                    b, k = mismatches[0][j], mismatches[1][j]
+                    logger.print(f"      [{b},{k}] PyTorch={pt[b,k]} vs ONNX={onnx[b,k]}")
+            continue
+
         diff = np.abs(pt - onnx)
         rel_err = diff.mean() / (np.abs(pt).mean() + 1e-9)
 
