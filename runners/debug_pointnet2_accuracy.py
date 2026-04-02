@@ -87,7 +87,7 @@ def run_om_model(model, pointcloud: torch.Tensor):
 
 def run_onnx_model(onnx_path: str, pointcloud: np.ndarray):
     """
-    运行 ONNX 模型
+    运行 ONNX 模型（单输出版本）
 
     Args:
         onnx_path: ONNX 模型路径
@@ -109,6 +109,66 @@ def run_onnx_model(onnx_path: str, pointcloud: np.ndarray):
 
     outputs = session.run(None, onnx_inputs)
     return outputs[0]
+
+
+def run_onnx_model_with_intermediates(onnx_path: str, pointcloud: np.ndarray, logger=None):
+    """
+    运行带中间输出的 ONNX 模型
+
+    Args:
+        onnx_path: ONNX 模型路径
+        pointcloud: [batch_size, 1024, 387] - 拼接后的点云数据
+        logger: TestLogger 实例
+
+    Returns:
+        final_output: 最终输出 [batch_size, 1024]
+        intermediates: 中间输出列表
+    """
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+    session = ort.InferenceSession(
+        str(onnx_path), sess_options=sess_options, providers=["CPUExecutionProvider"]
+    )
+
+    # 打印模型输入输出信息
+    if logger:
+        logger.print(f"\nONNX 模型信息:")
+        logger.print(f"  输入:")
+        for inp in session.get_inputs():
+            logger.print(f"    {inp.name}: {inp.shape}, {inp.type}")
+        logger.print(f"  输出:")
+        for out in session.get_outputs():
+            logger.print(f"    {out.name}: {out.shape}, {out.type}")
+
+    # 构造输入
+    onnx_inputs = {
+        'pointcloud': pointcloud.astype(np.float32),
+    }
+
+    # 运行推理
+    outputs = session.run(None, onnx_inputs)
+
+    # 第一个是最终输出，其余是中间输出
+    final_output = outputs[0]
+    intermediates = outputs[1:]
+
+    if logger:
+        logger.print(f"\nONNX 推理结果:")
+        logger.print(f"  最终输出 (pts_feat):")
+        logger.print(f"    Shape: {final_output.shape}")
+        logger.print(f"    Mean:  {final_output.mean():.6f}")
+        logger.print(f"    Std:   {final_output.std():.6f}")
+        logger.print(f"    Min:   {final_output.min():.6f}")
+        logger.print(f"    Max:   {final_output.max():.6f}")
+
+        logger.print(f"\n  中间输出 ({len(intermediates)} 个):")
+        for i, inter in enumerate(intermediates):
+            logger.print(f"    SA_{i} output:")
+            logger.print(f"      Shape: {inter.shape}")
+            logger.print(f"      Mean:  {inter.mean():.6f}")
+            logger.print(f"      Std:   {inter.std():.6f}")
+
+    return final_output, intermediates
 
 
 def create_dummy_inputs(batch_size: int = 4, device='npu:0'):
@@ -215,7 +275,9 @@ def test_pointnet2(
     onnx_path: str = './onnx_models/pointnet2.onnx',
     batch_size: int = 4,
     device: str = 'npu:0',
-    log_file: str = None
+    log_file: str = None,
+    use_intermediates: bool = False,
+    onnx_with_intermediates_path: str = None
 ):
     """测试 PointNet2 三种格式"""
 
@@ -223,14 +285,24 @@ def test_pointnet2(
     logger = TestLogger(log_file)
 
     logger.print(f"\n{'='*60}")
-    logger.print(f"PointNet2 精度对比测试")
+    if use_intermediates:
+        logger.print(f"PointNet2 带中间输出测试")
+    else:
+        logger.print(f"PointNet2 精度对比测试")
     logger.print(f"{'='*60}")
     logger.print(f"Batch Size: {batch_size}")
     logger.print(f"Device: {device}")
-    logger.print(f"\n模型路径:")
-    logger.print(f"  PyTorch: {checkpoint_path}")
-    logger.print(f"  OM:      {om_path}")
-    logger.print(f"  ONNX:    {onnx_path}")
+
+    # 确定使用哪个 ONNX 模型
+    if use_intermediates and onnx_with_intermediates_path:
+        actual_onnx_path = onnx_with_intermediates_path
+        logger.print(f"\n模型路径:")
+        logger.print(f"  ONNX (带中间输出): {actual_onnx_path}")
+    else:
+        actual_onnx_path = onnx_path
+        logger.print(f"\n模型路径:")
+        logger.print(f"  ONNX: {actual_onnx_path}")
+
     logger.print(f"\n输入格式:")
     logger.print(f"  pointcloud: [{batch_size}, 1024, 387] (拼接后的 pts + rgb_feat)")
 
@@ -239,49 +311,35 @@ def test_pointnet2(
 
     logger.print(f"\n原始数据 shape:")
     logger.print(f"  pointcloud: {pointcloud.shape}")
-
-    # # 测试 PyTorch
-    # logger.print(f"\n{'='*60}")
-    # logger.print(f"测试 PyTorch 模型...")
-    # logger.print(f"{'='*60}")
-    # pt_model = load_pytorch_model(checkpoint_path, device)
-    # start = time.time()
-    # pt_output = run_pytorch_model(pt_model, pointcloud)
-    # pt_time = time.time() - start
-    # logger.print(f"PyTorch 推理时间: {pt_time*1000:.2f} ms")
-
-    # # 测试 OM
-    # logger.print(f"\n{'='*60}")
-    # logger.print(f"测试 OM 模型...")
-    # logger.print(f"{'='*60}")
-    # om_model = load_om_model(om_path, device)
-    # start = time.time()
-    # om_output = run_om_model(om_model, pointcloud)
-    # om_time = time.time() - start
-    # logger.print(f"OM 推理时间: {om_time*1000:.2f} ms")
+    logger.print(f"  pointcloud mean: {pointcloud.mean():.6f}")
+    logger.print(f"  pointcloud std: {pointcloud.std():.6f}")
 
     # 测试 ONNX
     logger.print(f"\n{'='*60}")
     logger.print(f"测试 ONNX 模型...")
     logger.print(f"{'='*60}")
-    start = time.time()
-    onnx_output = run_onnx_model(onnx_path, pointcloud.cpu().numpy())
-    onnx_time = time.time() - start
-    logger.print(f"ONNX 推理时间: {onnx_time*1000:.2f} ms")
 
-    # # 对比输出
-    # all_match = compare_outputs(pt_output, om_output, onnx_output, "PointNet2")
+    if use_intermediates:
+        # 使用带中间输出的版本
+        onnx_output, intermediates = run_onnx_model_with_intermediates(
+            actual_onnx_path,
+            pointcloud.cpu().numpy(),
+            logger
+        )
+    else:
+        # 使用普通版本
+        onnx_output = run_onnx_model(actual_onnx_path, pointcloud.cpu().numpy())
 
-    # logger.print(f"\n{'='*60}")
-    # if all_match:
-    #     logger.print(f"✓ 精度测试通过")
-    # else:
-    #     logger.print(f"✗ 精度测试失败")
+    logger.print(f"\n{'='*60}")
+    logger.print(f"测试完成")
     logger.print(f"{'='*60}\n")
 
     logger.close()
 
-    # return all_match
+    if use_intermediates:
+        return onnx_output, intermediates
+    else:
+        return onnx_output
 
 
 def main():
@@ -295,12 +353,17 @@ def main():
     parser.add_argument('--onnx_path', type=str,
                         default='./onnx_models/pointnet2.onnx',
                         help='Path to ONNX model')
+    parser.add_argument('--onnx_with_intermediates_path', type=str,
+                        default='./onnx_models/pointnet2_with_intermediates.onnx',
+                        help='Path to ONNX model with intermediate outputs')
     parser.add_argument('--batch_size', type=int, default=4,
                         help='Batch size for testing')
     parser.add_argument('--device', type=str, default='npu:0',
                         help='Device to run on')
     parser.add_argument('--log_file', type=str, default='./logs/pointnet2_accuracy_test.log',
                         help='Path to log file')
+    parser.add_argument('--use_intermediates', action='store_true',
+                        help='Use ONNX model with intermediate outputs')
 
     args = parser.parse_args()
 
@@ -310,7 +373,9 @@ def main():
         onnx_path=args.onnx_path,
         batch_size=args.batch_size,
         device=args.device,
-        log_file=args.log_file
+        log_file=args.log_file,
+        use_intermediates=args.use_intermediates,
+        onnx_with_intermediates_path=args.onnx_with_intermediates_path
     )
 
 
