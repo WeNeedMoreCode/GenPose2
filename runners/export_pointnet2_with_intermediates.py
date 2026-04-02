@@ -208,14 +208,18 @@ def export_pointnet2_with_intermediates(
         dynamic_axes[name] = {0: 'batch_size'}
 
     try:
-        # 创建一个适配器，将 forward 调用转换为 forward_as_tuple
-        # 因为 ONNX export 需要直接调用模型的 forward 方法
-        # 我们临时替换 forward 方法为 forward_as_tuple
-        original_forward = export_model.forward
-        export_model.forward = export_model.forward_as_tuple
+        # 用适配器模块包装，将 dict 输出转为 tuple（ONNX 要求）
+        class _TupleAdapter(nn.Module):
+            def __init__(self, inner):
+                super().__init__()
+                self.inner = inner
+            def forward(self, pointcloud):
+                return self.inner.forward_as_tuple(pointcloud)
+
+        adapter = _TupleAdapter(export_model)
 
         torch.onnx.export(
-            export_model,
+            adapter,
             pointcloud,
             str(onnx_path),
             input_names=input_names,
@@ -227,9 +231,6 @@ def export_pointnet2_with_intermediates(
             do_constant_folding=True,
             keep_initializers_as_inputs=False,
         )
-
-        # 恢复原始 forward 方法
-        export_model.forward = original_forward
 
         print(f"✓ ONNX export successful: {onnx_path}")
         print(f"  File size: {onnx_path.stat().st_size / (1024*1024):.2f} MB")
