@@ -17,41 +17,113 @@ from networks.posenet_agent import PoseNet
 
 class PointNet2WithIntermediates(nn.Module):
     """
-    PointNet2 包装器，返回中间层输出
+    PointNet2 包装器，返回中间层输出（字典格式）
 
-    在原始 pts_encoder 的基础上，添加钩子捕获 SA_modules 的输出
+    直接复制原始 forward 逻辑，在关键位置保存中间输出
     """
 
     def __init__(self, pts_encoder):
         super().__init__()
         self.pts_encoder = pts_encoder
-        self.intermediates = []
+        # 复制必要的属性
+        self.SA_modules = pts_encoder.SA_modules
 
-        # 注册前向钩子来捕获 SA_modules 的输出
-        self.hooks = []
-        for i, sa_module in enumerate(self.pts_encoder.SA_modules):
-            hook = sa_module.register_forward_hook(
-                lambda module, input, output, idx=i: self.intermediates.append(output)
-            )
-            self.hooks.append(hook)
+        # 定义输出的顺序（用于 ONNX 导出）
+        # 每个 SA_module 保存：执行前的 l_features[i] 和执行后的 li_features
+        self.output_keys = []
+        num_sa_modules = len(self.SA_modules)
+        for i in range(num_sa_modules):
+            self.output_keys.append(f'sa_{i}_input')   # SA_module 执行前的输入
+            self.output_keys.append(f'sa_{i}_output')  # SA_module 执行后的输出
+        self.output_keys.append('pts_feat')            # 最终输出
+
+    def _break_up_pc(self, pc):
+        """从原始 pts_encoder 复制的方法"""
+        xyz = pc[..., 0:3].contiguous()
+        features = (
+            pc[..., 3:].transpose(1, 2).contiguous()
+            if pc.size(-1) > 3 else None
+        )
+        return xyz, features
 
     def forward(self, pointcloud):
         """
+        复制原始 forward 逻辑，但保存每个 SA_module 后的特征
+
         Args:
             pointcloud: [bs, 1024, 387]
 
         Returns:
-            output: [bs, 1024] - 最终输出
-            intermediate_0, intermediate_1, ...: 每个 SA_module 的输出
+            dict: 包含最终输出和所有中间特征的字典
+                {
+                    'sa_0_input': [bs, F_0_in, 1024],   # SA_module[0] 执行前的输入
+                    'sa_0_output': [bs, F_0, npoint_0],  # SA_module[0] 执行后的输出
+                    'sa_1_input': [bs, F_1_in, npoint_0],
+                    'sa_1_output': [bs, F_1, npoint_1],
+                    ...
+                    'pts_feat': [bs, 1024],
+                }
         """
-        # 清空之前的中间结果
-        self.intermediates.clear()
+        # 复制原始 forward 的逻辑
+        xyz, features = self._break_up_pc(pointcloud)
 
-        # 调用原始 forward
-        output = self.pts_encoder(pointcloud)
+        l_xyz, l_features = [xyz], [features]
 
-        # 返回最终输出 + 所有中间输出
-        return output, *self.intermediates
+        # 用于存储所有输出的字典
+        outputs = {}
+
+        # first SA_module
+        outputs['sa_0_input'] = l_features[0].clone()
+        li_xyz, li_features, idx = self.SA_modules[0](l_xyz[0], l_features[0], return_idx=True)
+        l_xyz.append(li_xyz)
+        l_features.append(li_features)
+        outputs['sa_0_output'] = li_features.clone()
+
+        features = torch.gather(features, 2,
+                    torch.unsqueeze(idx.type(torch.int64), 1).expand(-1, features.shape[1], -1))
+
+        # middle SA_modules
+        for i in range(1, len(self.SA_modules) - 1):
+            l_features[i] = torch.concatenate([l_features[i], features], dim=1)
+            outputs[f'sa_{i}_input'] = l_features[i].clone()
+            li_xyz, li_features, idx = self.SA_modules[i](l_xyz[i], l_features[i], return_idx=True)
+            l_xyz.append(li_xyz)
+            l_features.append(li_features)
+            outputs[f'sa_{i}_output'] = li_features.clone()
+
+            features = torch.gather(features, 2,
+                        torch.unsqueeze(idx.type(torch.int64), 1).expand(-1, features.shape[1], -1))
+
+        # last SA_module
+        i += 1
+        l_features[i] = torch.concatenate([l_features[i], features], dim=1)
+        outputs[f'sa_{i}_input'] = l_features[i].clone()
+        li_xyz, li_features, idx = self.SA_modules[i](l_xyz[i], l_features[i], return_idx=True)
+        l_xyz.append(li_xyz)
+        l_features.append(li_features)
+        outputs[f'sa_{i}_output'] = li_features.clone()
+
+        # 最终输出
+        output = l_features[-1].squeeze(-1)
+        outputs['pts_feat'] = output
+
+        return outputs
+
+    def forward_as_tuple(self, pointcloud):
+        """
+        返回元组格式（用于 ONNX 导出）
+
+        ONNX 不支持字典输出，因此提供这个方法将字典转换为有序元组
+        元组的顺序与 self.output_keys 一致
+
+        Args:
+            pointcloud: [bs, 1024, 387]
+
+        Returns:
+            tuple: (sa_0_input, sa_0_output, sa_1_input, sa_1_output, ..., pts_feat)
+        """
+        outputs_dict = self.forward(pointcloud)
+        return tuple(outputs_dict[key] for key in self.output_keys)
 
 
 def export_pointnet2_with_intermediates(
@@ -114,15 +186,13 @@ def export_pointnet2_with_intermediates(
     print(f"\nInput info:")
     print(f"  pointcloud: {pointcloud.shape}, float32")
 
-    # 准备输出名称
-    output_names = ['pts_feat']  # 最终输出
-    for i in range(num_sa_modules):
-        output_names.append(f'sa_{i}_output')
+    # 从模型获取输出键（已经定义好的顺序）
+    output_keys = export_model.output_keys
 
     print(f"\nOutput info:")
-    print(f"  Total outputs: {len(output_names)}")
-    for name in output_names:
-        print(f"    - {name}")
+    print(f"  Total outputs: {len(output_keys)}")
+    for key in output_keys:
+        print(f"    - {key}")
 
     # 导出 ONNX
     onnx_path = output_dir / "pointnet2_with_intermediates.onnx"
@@ -130,6 +200,7 @@ def export_pointnet2_with_intermediates(
     print("This may take a few minutes...")
 
     input_names = ['pointcloud']
+    output_names = output_keys  # 使用相同的键作为输出名称
 
     # dynamic_axes 需要包含所有输出
     dynamic_axes = {'pointcloud': {0: 'batch_size'}}
@@ -137,6 +208,12 @@ def export_pointnet2_with_intermediates(
         dynamic_axes[name] = {0: 'batch_size'}
 
     try:
+        # 创建一个适配器，将 forward 调用转换为 forward_as_tuple
+        # 因为 ONNX export 需要直接调用模型的 forward 方法
+        # 我们临时替换 forward 方法为 forward_as_tuple
+        original_forward = export_model.forward
+        export_model.forward = export_model.forward_as_tuple
+
         torch.onnx.export(
             export_model,
             pointcloud,
@@ -150,6 +227,10 @@ def export_pointnet2_with_intermediates(
             do_constant_folding=True,
             keep_initializers_as_inputs=False,
         )
+
+        # 恢复原始 forward 方法
+        export_model.forward = original_forward
+
         print(f"✓ ONNX export successful: {onnx_path}")
         print(f"  File size: {onnx_path.stat().st_size / (1024*1024):.2f} MB")
 
@@ -162,7 +243,6 @@ def export_pointnet2_with_intermediates(
             'checkpoint_path': str(checkpoint_path),
             'device': device,
             'outputs': output_names,
-            'description': 'Each SA_module output is included as a separate ONNX output'
         }
 
         with open(metadata_path, 'w') as f:
@@ -219,9 +299,10 @@ def test_onnx_with_intermediates(
     print(f"\nRunning inference...")
     outputs = session.run(None, {'pointcloud': pointcloud})
 
+    output_names = [o.name for o in session.get_outputs()]
     print(f"\n✓ Got {len(outputs)} outputs:")
-    for i, out in enumerate(outputs):
-        print(f"  Output {i}: shape={out.shape}, mean={out.mean():.6f}, std={out.std():.6f}")
+    for name, out in zip(output_names, outputs):
+        print(f"  {name}: shape={out.shape}, mean={out.mean():.6f}, std={out.std():.6f}")
 
     return outputs
 
