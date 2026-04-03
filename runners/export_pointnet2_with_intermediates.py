@@ -14,7 +14,15 @@ import torch.nn.functional as F
 from pathlib import Path
 from configs.config import get_config
 from networks.posenet_agent import PoseNet
+import pointnet2_ops
 from networks.pts_encoder.pointnet2_utils.pointnet2 import pointnet2_utils
+
+# 绕过 autograd Function 包装，直接调用底层函数
+# autograd Function.apply 会干扰 ONNX trace 精度
+pointnet2_utils.furthest_point_sample = lambda xyz, npoint: pointnet2_ops._furthest_point_sampling(xyz, npoint)
+pointnet2_utils.gather_operation = lambda features, idx: pointnet2_ops._gather_points(features, idx)
+pointnet2_utils.ball_query = lambda radius, nsample, xyz, new_xyz: pointnet2_ops._ball_query(new_xyz, xyz, radius, nsample)
+pointnet2_utils.grouping_operation = lambda points, idx: pointnet2_ops._group_points(points, idx)
 
 
 class PointNet2WithIntermediates(nn.Module):
@@ -98,20 +106,26 @@ class PointNet2WithIntermediates(nn.Module):
         new_xyz = pointnet2_utils.gather_operation(xyz_flipped, fps_idx).transpose(1, 2).contiguous()
         outputs['sa_0_new_xyz'] = new_xyz.clone()
 
-        # Step 3: Group (Ball Query + Grouping)
-        grouped_features = sa0.groupers[0](l_xyz[0], new_xyz, l_features[0])
-        outputs['sa_0_grouped'] = grouped_features.clone()
+        # Step 3: Group + Step 4: MLP + Step 5: Max Pool
+        # 遍历所有 grouper/mlp（与 calculate_xyz_features_idx 一致）
+        new_features_list = []
+        for gi in range(len(sa0.groupers)):
+            grouped_features = sa0.groupers[gi](l_xyz[0], new_xyz, l_features[0])
+            if gi == 0:
+                outputs['sa_0_grouped'] = grouped_features.clone()
 
-        # Step 4: MLP
-        mlp_out = sa0.mlps[0](grouped_features)
-        outputs['sa_0_mlp_out'] = mlp_out.clone()
+            mlp_out = sa0.mlps[gi](grouped_features)
+            if gi == 0:
+                outputs['sa_0_mlp_out'] = mlp_out.clone()
 
-        # Step 5: Max Pool
-        if sa0.pool_method == 'max_pool':
-            li_features = torch.amax(mlp_out, dim=3, keepdim=True)
-        elif sa0.pool_method == 'avg_pool':
-            li_features = F.avg_pool2d(mlp_out, kernel_size=[1, mlp_out.size(3)])
-        li_features = li_features.squeeze(-1)
+            if sa0.pool_method == 'max_pool':
+                pooled = torch.amax(mlp_out, dim=3, keepdim=True)
+            elif sa0.pool_method == 'avg_pool':
+                pooled = F.avg_pool2d(mlp_out, kernel_size=[1, mlp_out.size(3)])
+            pooled = pooled.squeeze(-1)
+            new_features_list.append(pooled)
+
+        li_features = torch.cat(new_features_list, dim=1)
         outputs['sa_0_output'] = li_features.clone()
 
         l_xyz.append(new_xyz)

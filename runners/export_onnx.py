@@ -26,6 +26,16 @@ from networks.posenet_agent import PoseNet
 from networks.scalenet import ScaleNet
 from networks.pts_encoder.pointnet2 import Pointnet2ClsMSGFus
 
+# ONNX 导出时绕过 autograd Function 包装，直接调用底层函数
+# autograd.Function.apply 在 ONNX trace 模式下会导致精度错误（如 FPS 输出全零）
+import pointnet2_ops
+from networks.pts_encoder.pointnet2_utils.pointnet2 import pointnet2_utils
+
+pointnet2_utils.furthest_point_sample = lambda xyz, npoint: pointnet2_ops._furthest_point_sampling(xyz, npoint)
+pointnet2_utils.gather_operation = lambda features, idx: pointnet2_ops._gather_points(features, idx)
+pointnet2_utils.grouping_operation = lambda points, idx: pointnet2_ops._group_points(points, idx)
+pointnet2_utils.ball_query = lambda radius, nsample, xyz, new_xyz: pointnet2_ops._ball_query(new_xyz, xyz, radius, nsample)
+
 
 def get_pointnet2_input_info(cfg, batch_size=1):
     """
