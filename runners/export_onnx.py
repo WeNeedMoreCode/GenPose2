@@ -66,7 +66,7 @@ def get_pointnet2_input_info(cfg, batch_size=1):
     }
 
 
-def export_pointnet2_to_onnx(checkpoint_path, output_dir, cfg, device='cpu', om_batch_size=1):
+def export_pointnet2_to_onnx(checkpoint_path, output_dir, cfg, device='cpu', om_batch_size=1, output_name='pointnet2.onnx'):
     """
     Export PointNet2 encoder to ONNX format.
 
@@ -91,7 +91,7 @@ def export_pointnet2_to_onnx(checkpoint_path, output_dir, cfg, device='cpu', om_
         print(f"  (Typically = DataLoader batch_size, e.g., 16)")
 
     # Load PoseNet to extract PointNet2 encoder
-    print(f"\nLoading PointNet2 encoder from ScoreNet checkpoint...")
+    print(f"\nLoading PointNet2 encoder from checkpoint...")
     print(f"  Checkpoint: {checkpoint_path}")
     print(f"  Device: {device}")
 
@@ -133,7 +133,7 @@ def export_pointnet2_to_onnx(checkpoint_path, output_dir, cfg, device='cpu', om_
         dummy_inputs.append(dummy)
 
     # Export to ONNX
-    onnx_path = output_dir / "pointnet2.onnx"
+    onnx_path = output_dir / output_name
     print(f"\nExporting to {onnx_path}...")
 
     input_names = [inp['name'] for inp in input_info['inputs']]
@@ -509,8 +509,8 @@ def export_scale_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu')
 def main():
     parser = argparse.ArgumentParser(description='Export GenPose2 Networks to ONNX')
     parser.add_argument('--agent_type', type=str, default='score',
-                        choices=['score', 'energy', 'scale', 'pointnet2', 'pointnet2_scorenet'],
-                        help='Agent type to export: score, energy, scale, pointnet2, or pointnet2_scorenet')
+                        choices=['score', 'energy', 'scale', 'pointnet2_from_score', 'pointnet2_from_energy', 'pointnet2_scorenet'],
+                        help='Agent type to export')
     parser.add_argument('--output_dir', type=str, default='./onnx_models',
                         help='Output directory for ONNX models')
     parser.add_argument('--checkpoint_path', type=str, default=None,
@@ -558,29 +558,51 @@ def main():
             print(f"\nExported files:")
             print(f"  - {args.output_dir}/scorenet.onnx")
 
-    elif args.agent_type == 'pointnet2':
+    elif args.agent_type == 'pointnet2_from_score':
         checkpoint_path = args.checkpoint_path
         if checkpoint_path is None:
             checkpoint_path = getattr(cfg, 'pretrained_score_model_path',
                                         None) or './results/ckpts/ScoreNet/scorenet.pth'
             print(f"Auto-detected checkpoint: {checkpoint_path}")
 
-        # Check if checkpoint exists
         if not os.path.exists(checkpoint_path):
             print(f"\nWarning: Checkpoint not found: {checkpoint_path}")
             print(f"Please specify the correct path with --checkpoint_path")
             return
 
-        # Export
         args.om_batch_size = getattr(args, "om_batch_size") or 16
-        success = export_pointnet2_to_onnx(checkpoint_path, args.output_dir, cfg, args.device, args.om_batch_size)
+        success = export_pointnet2_to_onnx(checkpoint_path, args.output_dir, cfg, args.device, args.om_batch_size,
+                                           output_name='pointnet2_from_score.onnx')
 
         if success:
             print(f"\n{'='*60}")
             print("Export completed successfully!")
             print(f"{'='*60}")
             print(f"\nExported files:")
-            print(f"  - {args.output_dir}/pointnet2.onnx")
+            print(f"  - {args.output_dir}/pointnet2_from_score.onnx")
+
+    elif args.agent_type == 'pointnet2_from_energy':
+        checkpoint_path = args.checkpoint_path
+        if checkpoint_path is None:
+            checkpoint_path = getattr(cfg, 'pretrained_energy_model_path',
+                                        None) or './results/ckpts/EnergyNet/energynet.pth'
+            print(f"Auto-detected checkpoint: {checkpoint_path}")
+
+        if not os.path.exists(checkpoint_path):
+            print(f"\nWarning: Checkpoint not found: {checkpoint_path}")
+            print(f"Please specify the correct path with --checkpoint_path")
+            return
+
+        args.om_batch_size = getattr(args, "om_batch_size") or 16
+        success = export_pointnet2_to_onnx(checkpoint_path, args.output_dir, cfg, args.device, args.om_batch_size,
+                                           output_name='pointnet2_from_energy.onnx')
+
+        if success:
+            print(f"\n{'='*60}")
+            print("Export completed successfully!")
+            print(f"{'='*60}")
+            print(f"\nExported files:")
+            print(f"  - {args.output_dir}/pointnet2_from_energy.onnx")
 
     elif args.agent_type == 'energy':
         checkpoint_path = args.checkpoint_path

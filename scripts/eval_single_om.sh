@@ -2,7 +2,8 @@
 # OM Model Evaluation Script
 # Uses separate PointNet2 OM and ScoreNet OM models for better performance
 CUDA_VISIBLE_DEVICES=0 python runners/evaluation_single.py \
---pretrained_pointnet2_model_path onnx_models/pointnet2.om \
+--pretrained_pointnet2_score_model_path onnx_models/pointnet2_from_score.om \
+--pretrained_pointnet2_energy_model_path onnx_models/pointnet2_from_energy.om \
 --pretrained_score_model_path onnx_models/scorenet.om \
 --pretrained_energy_model_path onnx_models/energy_network.om \
 --pretrained_scale_model_path results/ckpts/ScaleNet/scalenet.pth \

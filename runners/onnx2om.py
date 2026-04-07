@@ -43,6 +43,10 @@ def convert_onnx_to_om(
     # Detect model type from filename
     if 'pointnet2_scorenet' in onnx_path.stem:
         model_type = 'pointnet2_scorenet'
+    elif onnx_path.stem == 'pointnet2_from_score':
+        model_type = 'pointnet2_from_score'
+    elif onnx_path.stem == 'pointnet2_from_energy':
+        model_type = 'pointnet2_from_energy'
     elif onnx_path.stem == 'pointnet2':
         model_type = 'pointnet2'
     elif onnx_path.stem == 'scorenet':
@@ -57,6 +61,8 @@ def convert_onnx_to_om(
     # Model-type default batch sizes
     default_batch_sizes = {
         'pointnet2': 16,
+        'pointnet2_from_score': 16,
+        'pointnet2_from_energy': 16,
         'score': 800,
         'pointnet2_scorenet': 16,
         'energy': 1,
@@ -137,7 +143,7 @@ def convert_onnx_to_om(
             'sampled_pose': f"{batch_size},9",
             't': f"{batch_size},1"
         }
-    elif model_type == 'pointnet2':
+    elif model_type in ['pointnet2', 'pointnet2_from_score', 'pointnet2_from_energy']:
         input_shapes = {
             'pointcloud': f"{batch_size},1024,387"
         }
@@ -216,7 +222,7 @@ def main():
     )
     parser.add_argument('--onnx_path', type=str,
                         default='./onnx_models/scorenet.onnx',
-                        help='Path to input ONNX model (scorenet.onnx, pointnet2.onnx, etc.)')
+                        help='Path to input ONNX model (scorenet.onnx, pointnet2_from_score.onnx, etc.)')
     parser.add_argument('--output', type=str,
                         dest='output_path',
                         default=None,

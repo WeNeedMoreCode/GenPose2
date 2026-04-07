@@ -255,8 +255,7 @@ def inference_score_decoupled(save_path):
     # Initialize SDE components
     prior_fn, marginal_prob_fn, sde_fn, sampling_eps, T = init_sde('ve')
 
-    pointnet2_om_path = getattr(cfg, 'pretrained_pointnet2_model_path',
-                                      None) or './onnx_models/pointnet2.om'
+    pointnet2_om_path = getattr(cfg, 'pretrained_pointnet2_score_model_path', None)
 
 
     # Create Score Network wrapper (automatically uses OM or PyTorch)
@@ -358,9 +357,10 @@ def inference_score_decoupled(save_path):
 
     pickle.dump((all_pred_pose, all_score_feature), open(save_path, 'wb'))
     print(f"Unified decoupled inference complete! ({'OM' if score_net.is_om else 'PyTorch'})")
+    return score_net
 
 
-def inference_energy(score_path, save_path, energy_om_path=None):
+def inference_energy(score_path, save_path, energy_om_path=None, pointnet2_energy_om_path=None):
     if os.path.exists(save_path):
         return
     assert os.path.exists(score_path)
@@ -368,9 +368,16 @@ def inference_energy(score_path, save_path, energy_om_path=None):
 
     use_om = energy_om_path is not None and energy_om_path.endswith('.om')
     if use_om:
-        from networks.score_wrapper import EnergyNetWrapper
+        from networks.score_wrapper import EnergyNetWrapper, PointNet2EncoderWrapper
         energy_net = EnergyNetWrapper(energy_om_path, device=cfg.device)
+        # Load PointNet2 from energy checkpoint for pts_feat extraction
+        if pointnet2_energy_om_path is not None:
+            pointnet2_encoder = PointNet2EncoderWrapper(pointnet2_energy_om_path, device=cfg.device)
+        else:
+            pointnet2_encoder = None
         print(f"Using EnergyNet OM: {energy_om_path}")
+        if pointnet2_encoder is not None:
+            print(f"Using PointNet2 (from energy): {pointnet2_energy_om_path}")
     else:
         cfg.agent_type = 'energy'
         energy_agent = PoseNet(cfg)
@@ -396,10 +403,16 @@ def inference_energy(score_path, save_path, energy_om_path=None):
             batch_sample['precomputed_rgb_feat'] = rgb_feat
 
         if use_om:
-            # OM path: use cached pts_feat from score stage
             bs = batch_sample['pts'].shape[0]
             repeat_num = all_pred_pose[i].shape[1]
-            pts_feat = all_score_feature[i]['pts_feat'].to(cfg.device)
+
+            # Re-extract pts_feat to align with PTH path
+            if pointnet2_encoder is not None:
+                with torch.no_grad():
+                    pointcloud = torch.cat([batch_sample['pts'], rgb_feat], dim=-1)
+                    pts_feat = pointnet2_encoder(pointcloud)
+            else:
+                pts_feat = all_score_feature[i]['pts_feat'].to(cfg.device)
 
             # Repeat pts_feat
             repeated_pts_feat = pts_feat.unsqueeze(1).repeat(1, repeat_num, 1).view(bs * repeat_num, -1)
@@ -728,14 +741,13 @@ if __name__ == '__main__':
 
     # For OM models, verify PointNet2 OM exists
     if is_om_model:
-        pointnet2_om_path = getattr(cfg, 'pretrained_pointnet2_model_path',
-                                      None) or './onnx_models/pointnet2.om'
+        pointnet2_om_path = getattr(cfg, 'pretrained_pointnet2_score_model_path', None)
         if not os.path.exists(pointnet2_om_path):
             raise FileNotFoundError(
                 f"PointNet2 OM not found: {pointnet2_om_path}\n"
                 f"Please export PointNet2 to OM first:\n"
-                f"  python runners/export_onnx.py --agent_type pointnet2\n"
-                f"  python runners/onnx2om.py --onnx_path ./onnx_models/pointnet2.onnx"
+                f"  python runners/export_onnx.py --agent_type pointnet2_from_score\n"
+                f"  python runners/onnx2om.py --onnx_path ./onnx_models/pointnet2_from_score.onnx"
             )
 
     # Unified decoupled inference (works for both PyTorch and OM)
@@ -749,14 +761,21 @@ if __name__ == '__main__':
         print(f"Model: {cfg.pretrained_score_model_path}")
     print("This enables direct PyTorch vs OM comparison for debugging")
     print("="*60)
-    inference_score_decoupled(score_save_path)
+    score_net = inference_score_decoupled(score_save_path)
+
+    # Release score stage's PointNet2 OM to free NPU memory before energy stage
+    if hasattr(score_net, 'pointnet2_om') and score_net.pointnet2_om is not None:
+        del score_net.pointnet2_om
+        score_net.pointnet2_om = None
+        gc.collect()
 
     aggregate_save_path = f'results/evaluation_results/{cfg.result_dir}/aggregated.pkl'
     energy_om_path = getattr(cfg, 'pretrained_energy_om_path', None) or getattr(cfg, 'pretrained_energy_model_path', None)
     if energy_om_path is not None:
         energy_model_name = '_'.join(energy_om_path.split('/')[-2:])
         energy_save_path = f'results/evaluation_results/{cfg.result_dir}/energy_prediction_{energy_model_name}.pkl'
-        inference_energy(score_save_path, energy_save_path, energy_om_path=energy_om_path)
+        pointnet2_energy_om_path = getattr(cfg, 'pretrained_pointnet2_energy_model_path', None)
+        inference_energy(score_save_path, energy_save_path, energy_om_path=energy_om_path, pointnet2_energy_om_path=pointnet2_energy_om_path)
         aggregate_pose(score_save_path, energy_save_path, aggregate_save_path)
     else:
         aggregate_pose(score_save_path, None, aggregate_save_path)
