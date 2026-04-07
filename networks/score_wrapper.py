@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+from ais_bench.infer.interface import InferSession
 import torch
 import torch.nn as nn
 from configs.config import get_config
@@ -104,15 +105,7 @@ class ScoreNetworkWrapper(nn.Module):
         Input: pts, rgb_feat, sampled_pose, t
         Output: score
         """
-        try:
-            from ais_bench.infer.interface import InferSession
-        except ImportError:
-            raise ImportError(
-                "OM model requires 'ais_bench' package. "
-                "Install with: pip install ais_bench"
-            )
-
-        # Determine device ID
+        try:        # Determine device ID
         if isinstance(self.device, str) and 'npu:' in self.device:
             device_id = int(self.device.split(':')[1])
         else:
@@ -485,15 +478,7 @@ class PointNet2EncoderWrapper(nn.Module):
 
     def _load_om_model(self):
         """Load PointNet2 OM model using ais_bench InferSession."""
-        try:
-            from ais_bench.infer.interface import InferSession
-        except ImportError:
-            raise ImportError(
-                "OM model requires 'ais_bench' package. "
-                "Install with: pip install ais_bench"
-            )
-
-        # Determine device ID
+        try:        # Determine device ID
         if isinstance(self.device, str) and 'npu:' in self.device:
             device_id = int(self.device.split(':')[1])
         else:
@@ -558,7 +543,7 @@ class EnergyNetWrapper(nn.Module):
         self.device = device
 
         print(f"Loading EnergyNet OM model: {self.checkpoint_path}")
-        self.om_session = InferSession(device_id=0, str(self.checkpoint_path))
+        self.om_session = InferSession(0, str(self.checkpoint_path))
         print(f"✓ EnergyNet OM model loaded successfully")
 
     def forward(self, pts_feat, sampled_pose, t):

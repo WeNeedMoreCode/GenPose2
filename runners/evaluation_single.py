@@ -364,7 +364,7 @@ def inference_energy(score_path, save_path, energy_om_path=None):
     if os.path.exists(save_path):
         return
     assert os.path.exists(score_path)
-    all_pred_pose, _ = pickle.load(open(score_path, 'rb'))
+    all_pred_pose, all_score_feature = pickle.load(open(score_path, 'rb'))
 
     use_om = energy_om_path is not None and energy_om_path.endswith('.om')
     if use_om:
@@ -396,14 +396,10 @@ def inference_energy(score_path, save_path, energy_om_path=None):
             batch_sample['precomputed_rgb_feat'] = rgb_feat
 
         if use_om:
-            # OM path: manual preprocessing, then OM inference
+            # OM path: use cached pts_feat from score stage
             bs = batch_sample['pts'].shape[0]
             repeat_num = all_pred_pose[i].shape[1]
-
-            # Extract pts_feat (same as PyTorch path)
-            with torch.no_grad():
-                pointcloud = torch.cat([batch_sample['pts'], rgb_feat], dim=-1)
-                pts_feat = agent.net.pts_encoder(pointcloud)  # [bs, 1024]
+            pts_feat = all_score_feature[i]['pts_feat'].to(cfg.device)
 
             # Repeat pts_feat
             repeated_pts_feat = pts_feat.unsqueeze(1).repeat(1, repeat_num, 1).view(bs * repeat_num, -1)
