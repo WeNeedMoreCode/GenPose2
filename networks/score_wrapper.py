@@ -186,7 +186,7 @@ class ScoreNetworkWrapper(nn.Module):
             ])
 
             # Run OM inference
-            outputs = self.score_net_om.infer(inputs, mode="dymbatch")
+            outputs = self.score_net_om.infer(inputs)
 
             # Convert back to torch tensor
             if isinstance(outputs, (list, tuple)) and len(outputs) == 1:
@@ -518,7 +518,7 @@ class PointNet2EncoderWrapper(nn.Module):
         input_data = pointcloud.cpu().numpy().astype(np.float32)
 
         # Run OM inference
-        outputs = self.om_session.infer([input_data], mode="dymbatch")
+        outputs = self.om_session.infer([input_data])
 
         # Convert back to torch tensor
         if isinstance(outputs, (list, tuple)) and len(outputs) == 1:

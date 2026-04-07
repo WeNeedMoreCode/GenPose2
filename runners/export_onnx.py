@@ -12,7 +12,6 @@ Usage:
 
 import sys
 import os
-import json
 import argparse
 import torch
 import torch.nn as nn
@@ -157,39 +156,11 @@ def export_pointnet2_to_onnx(checkpoint_path, output_dir, cfg, device='cpu', om_
         opset_version=17,
         verbose=False,
         export_params=True,
-        do_constant_folding=True,
+        do_constant_folding=False,
         keep_initializers_as_inputs=False,
         operator_export_type=torch.onnx.OperatorExportTypes.ONNX,
     )
     print(f"✓ ONNX export successful: {onnx_path}")
-
-    # Save metadata
-    metadata_path = output_dir / "pointnet2_metadata.json"
-    metadata = {
-        'model_type': 'PointNet2',
-        'architecture': 'Pointnet2ClsMSGFus',
-        'export_wrapper': 'PointNet2ExportWrapper (concatenates pts + rgb_feat)',
-        'checkpoint_path': str(checkpoint_path),
-        'onnx_path': str(onnx_path),
-        'inputs': input_info['inputs'],
-        'outputs': input_info['outputs'],
-        'metadata': input_info['metadata'],
-        'config': {
-            'device': cfg.device,
-            'num_points': cfg.num_points,
-            'dino': cfg.dino,
-            'pointnet2_params': cfg.pointnet2_params,
-            'om_batch_size': om_batch_size,
-            'export_config': {
-                'batch_size': getattr(cfg, 'batch_size', None),
-                'note': 'om_batch_size = DataLoader batch_size (typically 16)',
-            }
-        }
-    }
-
-    with open(metadata_path, 'w') as f:
-        json.dump(metadata, f, indent=2)
-    print(f"✓ Metadata saved: {metadata_path}")
 
     return True
 
@@ -356,44 +327,6 @@ def export_score_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu',
     )
     print(f"✓ ONNX export successful: {onnx_path}")
 
-    # Save metadata
-    metadata_path = output_dir / "scorenet_metadata.json"
-    metadata = {
-        'model_type': 'ScoreNet',
-        'checkpoint_path': str(checkpoint_path),
-        'onnx_path': str(onnx_path),
-        'inputs': input_info['inputs'],
-        'outputs': input_info['outputs'],
-        'metadata': input_info['metadata'],
-        'config': {
-            'device': cfg.device,
-            'pose_mode': cfg.pose_mode,
-            'num_points': cfg.num_points,
-            'dino': cfg.dino,
-            'om_batch_size': om_batch_size,
-            # Save the batch_size and repeat_num configuration used for export
-            # This allows verification during inference
-            'export_config': {
-                'batch_size': getattr(cfg, 'batch_size', None),  # If available
-                'eval_repeat_num': getattr(cfg, 'eval_repeat_num', None),  # If available
-                'note': 'om_batch_size = batch_size * eval_repeat_num',
-            }
-        }
-    }
-
-    # Verify the calculation
-    if metadata['config']['export_config']['batch_size'] and metadata['config']['export_config']['eval_repeat_num']:
-        expected_batch_size = metadata['config']['export_config']['batch_size'] * metadata['config']['export_config']['eval_repeat_num']
-        if expected_batch_size != om_batch_size:
-            print(f"\nWarning: om_batch_size mismatch!")
-            print(f"  Expected from config: {expected_batch_size} = {metadata['config']['export_config']['batch_size']} * {metadata['config']['export_config']['eval_repeat_num']}")
-            print(f"  Specified om_batch_size: {om_batch_size}")
-            print(f"  Please ensure consistency!")
-
-    with open(metadata_path, 'w') as f:
-        json.dump(metadata, f, indent=2)
-    print(f"✓ Metadata saved: {metadata_path}")
-
     return True
 
 
@@ -487,32 +420,6 @@ def export_energy_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu'
     )
     print(f"✓ ONNX export successful: {onnx_path}")
 
-    # Save metadata
-    metadata_path = output_dir / "energy_network_metadata.json"
-    metadata = {
-        'model_type': 'PoseEnergyNet',
-        'checkpoint_path': str(checkpoint_path),
-        'onnx_path': str(onnx_path),
-        'inputs': [
-            {'name': 'pts_feat', 'shape': [1, 1024], 'dtype': 'float32'},
-            {'name': 'sampled_pose', 'shape': [1, 9], 'dtype': 'float32'},
-            {'name': 't', 'shape': [1, 1], 'dtype': 'float32'},
-        ],
-        'outputs': [
-            {'name': 'energy', 'shape': [1], 'dtype': 'float32'},
-        ],
-        'config': {
-            'device': cfg.device,
-            'pose_mode': cfg.pose_mode,
-            'num_points': cfg.num_points,
-            'dino': cfg.dino,
-        }
-    }
-
-    with open(metadata_path, 'w') as f:
-        json.dump(metadata, f, indent=2)
-    print(f"✓ Metadata saved: {metadata_path}")
-
     return True
 
 
@@ -595,31 +502,6 @@ def export_scale_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu')
     )
     print(f"✓ ONNX export successful: {onnx_path}")
 
-    # Save metadata
-    metadata_path = output_dir / "scale_network_metadata.json"
-    metadata = {
-        'model_type': 'ScaleNet',
-        'checkpoint_path': str(checkpoint_path),
-        'onnx_path': str(onnx_path),
-        'inputs': [
-            {'name': 'pts_feat', 'shape': [1, 1024], 'dtype': 'float32'},
-            {'name': 'axes', 'shape': [1, 3, 3], 'dtype': 'float32'},
-        ],
-        'outputs': [
-            {'name': 'length', 'shape': [1, 3], 'dtype': 'float32'},
-        ],
-        'config': {
-            'device': cfg.device,
-            'pose_mode': cfg.pose_mode,
-            'num_points': cfg.num_points,
-            'dino': cfg.dino,
-        }
-    }
-
-    with open(metadata_path, 'w') as f:
-        json.dump(metadata, f, indent=2)
-    print(f"✓ Metadata saved: {metadata_path}")
-
     return True
 
 
@@ -675,7 +557,6 @@ def main():
             print(f"{'='*60}")
             print(f"\nExported files:")
             print(f"  - {args.output_dir}/scorenet.onnx")
-            print(f"  - {args.output_dir}/scorenet_metadata.json")
 
     elif args.agent_type == 'pointnet2':
         checkpoint_path = args.checkpoint_path
@@ -700,7 +581,6 @@ def main():
             print(f"{'='*60}")
             print(f"\nExported files:")
             print(f"  - {args.output_dir}/pointnet2.onnx")
-            print(f"  - {args.output_dir}/pointnet2_metadata.json")
 
     elif args.agent_type == 'energy':
         checkpoint_path = args.checkpoint_path
@@ -724,7 +604,6 @@ def main():
             print(f"{'='*60}")
             print(f"\nExported files:")
             print(f"  - {args.output_dir}/energy_network.onnx")
-            print(f"  - {args.output_dir}/energy_network_metadata.json")
 
     elif args.agent_type == 'scale':
         checkpoint_path = args.checkpoint_path
@@ -748,7 +627,6 @@ def main():
             print(f"{'='*60}")
             print(f"\nExported files:")
             print(f"  - {args.output_dir}/scale_network.onnx")
-            print(f"  - {args.output_dir}/scale_network_metadata.json")
 
     elif args.agent_type == 'pointnet2_scorenet':
         checkpoint_path = args.checkpoint_path
@@ -774,7 +652,6 @@ def main():
             print(f"{'='*60}")
             print(f"\nExported files:")
             print(f"  - {args.output_dir}/pointnet2_scorenet.onnx")
-            print(f"  - {args.output_dir}/pointnet2_scorenet_metadata.json")
 
     if success:
         print(f"\nNext steps:")

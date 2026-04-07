@@ -107,7 +107,7 @@ def get_dataloader():
         shuffle=False,
         num_workers=cfg.num_workers,
         persistent_workers=True,
-        drop_last=False,
+        drop_last=True,
         pin_memory=True,
     )
     return dataloader
