@@ -360,16 +360,22 @@ def inference_score_decoupled(save_path):
     print(f"Unified decoupled inference complete! ({'OM' if score_net.is_om else 'PyTorch'})")
 
 
-def inference_energy(score_path, save_path):
+def inference_energy(score_path, save_path, energy_om_path=None):
     if os.path.exists(save_path):
         return
     assert os.path.exists(score_path)
     all_pred_pose, _ = pickle.load(open(score_path, 'rb'))
 
-    cfg.agent_type = 'energy'
-    energy_agent = PoseNet(cfg)
-    energy_agent.load_ckpt(model_dir=cfg.pretrained_energy_model_path, model_path=True, load_model_only=True)
-    energy_agent.eval()
+    use_om = energy_om_path is not None and energy_om_path.endswith('.om')
+    if use_om:
+        from networks.score_wrapper import EnergyNetWrapper
+        energy_net = EnergyNetWrapper(energy_om_path, device=cfg.device)
+        print(f"Using EnergyNet OM: {energy_om_path}")
+    else:
+        cfg.agent_type = 'energy'
+        energy_agent = PoseNet(cfg)
+        energy_agent.load_ckpt(model_dir=cfg.pretrained_energy_model_path, model_path=True, load_model_only=True)
+        energy_agent.eval()
 
     all_pred_energy = []
     total_samples = 0
@@ -389,13 +395,41 @@ def inference_energy(score_path, save_path):
         if rgb_feat is not None:
             batch_sample['precomputed_rgb_feat'] = rgb_feat
 
-        pred_energy = energy_agent.get_energy(
-            data=batch_sample,
-            pose_samples=all_pred_pose[i],
-            T=1e-5,
-            mode='test',
-            extract_feature=True
-        )
+        if use_om:
+            # OM path: manual preprocessing, then OM inference
+            bs = batch_sample['pts'].shape[0]
+            repeat_num = all_pred_pose[i].shape[1]
+
+            # Extract pts_feat (same as PyTorch path)
+            with torch.no_grad():
+                pointcloud = torch.cat([batch_sample['pts'], rgb_feat], dim=-1)
+                pts_feat = agent.net.pts_encoder(pointcloud)  # [bs, 1024]
+
+            # Repeat pts_feat
+            repeated_pts_feat = pts_feat.unsqueeze(1).repeat(1, repeat_num, 1).view(bs * repeat_num, -1)
+
+            # Prepare sampled_pose with pts_center subtracted
+            pose_samples = all_pred_pose[i].clone().view(bs * repeat_num, -1).type_as(repeated_pts_feat)
+            pts_center = batch_sample['pts_center']
+            repeated_pts_center = pts_center.unsqueeze(1).repeat(1, repeat_num, 1).view(bs * repeat_num, -1)
+            pose_samples[:, -3:] -= repeated_pts_center
+
+            # Prepare t
+            T = 1e-5
+            t = torch.ones(bs * repeat_num, 1).type_as(repeated_pts_feat) * T
+
+            # OM inference
+            with torch.no_grad():
+                pred_energy = energy_net(repeated_pts_feat, pose_samples, t)
+            pred_energy = pred_energy.reshape(bs, repeat_num, -1)
+        else:
+            pred_energy = energy_agent.get_energy(
+                data=batch_sample,
+                pose_samples=all_pred_pose[i],
+                T=1e-5,
+                mode='test',
+                extract_feature=True
+            )
         all_pred_energy.append(pred_energy.cpu())
 
         torch.npu.synchronize()
@@ -722,10 +756,11 @@ if __name__ == '__main__':
     inference_score_decoupled(score_save_path)
 
     aggregate_save_path = f'results/evaluation_results/{cfg.result_dir}/aggregated.pkl'
-    if cfg.pretrained_energy_model_path is not None:
-        energy_model_name = '_'.join(cfg.pretrained_energy_model_path.split('/')[-2:])
+    energy_om_path = getattr(cfg, 'pretrained_energy_om_path', None) or getattr(cfg, 'pretrained_energy_model_path', None)
+    if energy_om_path is not None:
+        energy_model_name = '_'.join(energy_om_path.split('/')[-2:])
         energy_save_path = f'results/evaluation_results/{cfg.result_dir}/energy_prediction_{energy_model_name}.pkl'
-        inference_energy(score_save_path, energy_save_path)
+        inference_energy(score_save_path, energy_save_path, energy_om_path=energy_om_path)
         aggregate_pose(score_save_path, energy_save_path, aggregate_save_path)
     else:
         aggregate_pose(score_save_path, None, aggregate_save_path)

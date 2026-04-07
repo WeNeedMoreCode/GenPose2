@@ -541,3 +541,44 @@ def create_pointnet2_encoder(checkpoint_path, device='npu:0'):
         PointNet2EncoderWrapper instance
     """
     return PointNet2EncoderWrapper(checkpoint_path, device)
+
+
+class EnergyNetWrapper(nn.Module):
+    """
+    Wrapper for EnergyNet OM model.
+
+    Args:
+        checkpoint_path: Path to OM model (.om file)
+        device: Device to run inference on (e.g., 'npu:0')
+    """
+
+    def __init__(self, checkpoint_path, device='npu:0'):
+        super().__init__()
+        self.checkpoint_path = Path(checkpoint_path)
+        self.device = device
+
+        print(f"Loading EnergyNet OM model: {self.checkpoint_path}")
+        self.om_session = InferSession(device_id=0, str(self.checkpoint_path))
+        print(f"✓ EnergyNet OM model loaded successfully")
+
+    def forward(self, pts_feat, sampled_pose, t):
+        """
+        Args:
+            pts_feat: [batch_size, 1024]
+            sampled_pose: [batch_size, 9]
+            t: [batch_size, 1]
+        Returns:
+            energy: [batch_size, 2]
+        """
+        input_pts = pts_feat.cpu().numpy().astype(np.float32)
+        input_pose = sampled_pose.cpu().numpy().astype(np.float32)
+        input_t = t.cpu().numpy().astype(np.float32)
+
+        outputs = self.om_session.infer([input_pts, input_pose, input_t])
+
+        if isinstance(outputs, (list, tuple)):
+            energy = torch.from_numpy(outputs[0])
+        else:
+            energy = torch.from_numpy(outputs)
+
+        return energy.to(self.device)
