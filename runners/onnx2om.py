@@ -65,8 +65,8 @@ def convert_onnx_to_om(
         'pointnet2_from_energy': 16,
         'score': 800,
         'pointnet2_scorenet': 16,
-        'energy': 1,
-        'scale': 1,
+        'energy': 800,
+        'scale': 16,
     }
 
     if batch_size is None:
@@ -131,7 +131,7 @@ def convert_onnx_to_om(
     #     pts_feat:     [batch_size, 1024] - contains RGB info
     #     sampled_pose: [batch_size, 9]
     #     t:            [batch_size, 1]
-    #   scale_network:
+    #   scalenet:
     #     pts_feat:     [batch_size, 1024] - contains RGB info
     #     axes:         [batch_size, 3, 3] - rotation matrices
 

@@ -468,7 +468,7 @@ def export_scale_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu')
     axes = torch.randn(1, 3, 3, dtype=torch.float32)
 
     # Export to ONNX
-    onnx_path = output_dir / "scale_network.onnx"
+    onnx_path = output_dir / "scalenet.onnx"
     print(f"\nExporting to {onnx_path}...")
 
     # Wrapper: convert positional args to dict for ScaleNet
@@ -648,7 +648,7 @@ def main():
             print("Export completed successfully!")
             print(f"{'='*60}")
             print(f"\nExported files:")
-            print(f"  - {args.output_dir}/scale_network.onnx")
+            print(f"  - {args.output_dir}/scalenet.onnx")
 
     elif args.agent_type == 'pointnet2_scorenet':
         checkpoint_path = args.checkpoint_path
