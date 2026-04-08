@@ -105,7 +105,6 @@ class ScoreNetworkWrapper(nn.Module):
         Input: pts, rgb_feat, sampled_pose, t
         Output: score
         """
-        try:        # Determine device ID
         if isinstance(self.device, str) and 'npu:' in self.device:
             device_id = int(self.device.split(':')[1])
         else:
@@ -478,7 +477,6 @@ class PointNet2EncoderWrapper(nn.Module):
 
     def _load_om_model(self):
         """Load PointNet2 OM model using ais_bench InferSession."""
-        try:        # Determine device ID
         if isinstance(self.device, str) and 'npu:' in self.device:
             device_id = int(self.device.split(':')[1])
         else:
@@ -567,3 +565,42 @@ class EnergyNetWrapper(nn.Module):
             energy = torch.from_numpy(outputs)
 
         return energy.to(self.device)
+
+
+class ScaleNetWrapper(nn.Module):
+    """
+    Wrapper for ScaleNet OM model.
+
+    Args:
+        checkpoint_path: Path to OM model (.om file)
+        device: Device to run inference on (e.g., 'npu:0')
+    """
+
+    def __init__(self, checkpoint_path, device='npu:0'):
+        super().__init__()
+        self.checkpoint_path = Path(checkpoint_path)
+        self.device = device
+
+        print(f"Loading ScaleNet OM model: {self.checkpoint_path}")
+        self.om_session = InferSession(0, str(self.checkpoint_path))
+        print(f"✓ ScaleNet OM model loaded successfully")
+
+    def forward(self, pts_feat, axes):
+        """
+        Args:
+            pts_feat: [batch_size, 1024]
+            axes: [batch_size, 3, 3]
+        Returns:
+            length: [batch_size, 3]
+        """
+        input_pts = pts_feat.cpu().numpy().astype(np.float32)
+        input_axes = axes.cpu().numpy().astype(np.float32)
+
+        outputs = self.om_session.infer([input_pts, input_axes])
+
+        if isinstance(outputs, (list, tuple)):
+            length = torch.from_numpy(outputs[0])
+        else:
+            length = torch.from_numpy(outputs)
+
+        return length.to(self.device)

@@ -506,7 +506,7 @@ def aggregate_pose(score_path, energy_path, save_path):
     
     pickle.dump(all_aggregated_pose, open(save_path, 'wb'))
 
-def inference_scale(score_path, aggregate_path, save_path):
+def inference_scale(score_path, aggregate_path, save_path, scale_om_path=None):
     if os.path.exists(save_path):
         return
     assert os.path.exists(score_path)
@@ -547,11 +547,17 @@ def inference_scale(score_path, aggregate_path, save_path):
 
         pickle.dump((all_aggregated_pose, all_final_length), open(save_path, 'wb'))
         return
-    
-    cfg.agent_type = 'scale'
-    scale_agent = PoseNet(cfg)
-    scale_agent.load_ckpt(model_dir=cfg.pretrained_scale_model_path, model_path=True, load_model_only=True)
-    scale_agent.eval()
+
+    use_om = scale_om_path is not None and scale_om_path.endswith('.om')
+    if use_om:
+        from networks.score_wrapper import ScaleNetWrapper
+        scale_net = ScaleNetWrapper(scale_om_path, device=cfg.device)
+        print(f"Using ScaleNet OM: {scale_om_path}")
+    else:
+        cfg.agent_type = 'scale'
+        scale_agent = PoseNet(cfg)
+        scale_agent.load_ckpt(model_dir=cfg.pretrained_scale_model_path, model_path=True, load_model_only=True)
+        scale_agent.eval()
 
     all_final_pose = []
     all_final_length = []
@@ -561,15 +567,24 @@ def inference_scale(score_path, aggregate_path, save_path):
         torch.npu.synchronize()
         start_time = time.time()
 
-        batch_sample = process_batch(
-            batch_sample = test_batch, 
-            device=cfg.device, 
-            pose_mode=cfg.pose_mode,
-        )
-        batch_sample.update({key: (None if value is None else value.to(cfg.device)) 
-                             for key, value in all_score_feature[i].items()})
-        batch_sample['axes'] = all_aggregated_pose[i][:, :3, :3].to(cfg.device)
-        cal_mat, length = scale_agent.pred_scale_func(batch_sample)
+        pts_feat = all_score_feature[i]['pts_feat'].to(cfg.device)
+        axes = all_aggregated_pose[i][:, :3, :3].to(cfg.device)
+
+        if use_om:
+            with torch.no_grad():
+                length = scale_net(pts_feat, axes)
+            cal_mat = axes  # pred_scale_func returns axes unchanged ("historical reasons")
+        else:
+            batch_sample = process_batch(
+                batch_sample=test_batch,
+                device=cfg.device,
+                pose_mode=cfg.pose_mode,
+            )
+            batch_sample.update({key: (None if value is None else value.to(cfg.device))
+                                 for key, value in all_score_feature[i].items()})
+            batch_sample['axes'] = axes
+            cal_mat, length = scale_agent.pred_scale_func(batch_sample)
+
         final_pose = all_aggregated_pose[i].clone()
         final_pose[:, :3, :3] = cal_mat.cpu()
         all_final_pose.append(final_pose.cpu())
@@ -583,7 +598,7 @@ def inference_scale(score_path, aggregate_path, save_path):
 
         if i % 4 == 3:
             gc.collect()
-    
+
     pickle.dump((all_final_pose, all_final_length), open(save_path, 'wb'))
 
 def get_detect_match(cls_path, save_path):
@@ -785,7 +800,7 @@ if __name__ == '__main__':
     else:
         scale_model_name = 'scale-none'
     cls_save_path = f'results/evaluation_results/{cfg.result_dir}/scale_prediction_{scale_model_name}.pkl'
-    inference_scale(score_save_path, aggregate_save_path, cls_save_path)
+    inference_scale(score_save_path, aggregate_save_path, cls_save_path, scale_om_path=cfg.pretrained_scale_model_path)
 
     dm_save_path = f'results/evaluation_results/{cfg.result_dir}/detect_match.pkl'
     get_detect_match(cls_save_path, dm_save_path)

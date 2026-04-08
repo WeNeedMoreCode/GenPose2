@@ -6,7 +6,7 @@ CUDA_VISIBLE_DEVICES=0 python runners/evaluation_single.py \
 --pretrained_pointnet2_energy_model_path onnx_models/pointnet2_from_energy.om \
 --pretrained_score_model_path onnx_models/scorenet.om \
 --pretrained_energy_model_path onnx_models/energy_network.om \
---pretrained_scale_model_path results/ckpts/ScaleNet/scalenet.pth \
+--pretrained_scale_model_path onnx_models/scale_network.om \
 --data_path omin6dpose-000a/ROPE/ \
 --sampler_mode ode \
 --percentage_data_for_test 1.0 \
