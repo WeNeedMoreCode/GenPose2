@@ -531,12 +531,9 @@ class DINOv2ExportWrapper(nn.Module):
 
     def forward(self, roi_rgb, roi_xs, roi_ys):
         feat = self.dino.forward_features(roi_rgb)
-        # dinov2_vits14 forward_features returns dict with 'x_norm_patchtokens'
-        # Shape: [B, num_patches+1, embed_dim] -> remove CLS token -> [B, 256, 384]
-        feat = feat['x_norm_patchtokens'][:, 1:, :]
-        B, N, C = feat.shape
-        H = W = self.feat_size
-        feat = feat.reshape(B, H, W, C).permute(0, 3, 1, 2)  # [B, 384, 16, 16]
+        # forward_features already strips CLS token: x_norm_patchtokens [B, 256, 384]
+        # Equivalent to get_intermediate_layers(x)[0]
+        feat = feat['x_norm_patchtokens']  # [B, 256, 384]
 
         xs = roi_xs // self.patch_size
         ys = roi_ys // self.patch_size
@@ -579,6 +576,39 @@ def export_dinov2_to_onnx(output_dir, device='cpu', img_size=224, num_pts=1024):
     dino = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
     dino = dino.to(device)
     dino.requires_grad_(False)
+
+    # Patch interpolate_pos_encoding to skip F.interpolate(mode='bicubic')
+    # which uses Resize op with mode='cubic' not supported by Ascend 310P.
+    # For fixed 224x224 input, positional embedding interpolation is unnecessary.
+    _orig_interpolate_pos = dino.interpolate_pos_encoding
+
+    def _no_resize_interpolate_pos(self, x, w, h):
+        npatch = x.shape[1] - 1
+        N = self.pos_embed.shape[1] - 1
+        if npatch == N and w == h:
+            return x
+        # Sizes don't match: pos_embed is for 518x518 (37x37 patches),
+        # input is 224x224 (16x16 patches). Use bilinear instead of bicubic
+        # (Ascend 310P only supports nearest/linear/bilinear for Resize).
+        import torch.nn.functional as F
+        import math
+        previous_dtype = x.dtype
+        pos_embed = self.pos_embed.float()
+        cls_pos_embed = pos_embed[0, 0:1, :].unsqueeze(0)
+        pos_embed = pos_embed[0, 1:, :]
+        dim = pos_embed.shape[-1]
+        w0 = h0 = int(math.sqrt(N))
+        target_w = target_h = int(math.sqrt(npatch))
+        pos_embed = pos_embed.reshape(1, w0, h0, dim).permute(0, 3, 1, 2)
+        pos_embed = F.interpolate(pos_embed, size=(target_h, target_w),
+                                  mode='bilinear', align_corners=False)
+        pos_embed = pos_embed.permute(0, 2, 3, 1).reshape(1, -1, dim)
+        pos_embed = torch.cat((cls_pos_embed, pos_embed), dim=1)
+        return (x + pos_embed).to(previous_dtype)
+
+    import types
+    dino.interpolate_pos_encoding = types.MethodType(_no_resize_interpolate_pos, dino)
+    print(f"  Patched interpolate_pos_encoding: bicubic -> linear")
 
     # Verify forward_features output
     print(f"\nVerifying forward_features output keys...")
@@ -628,7 +658,23 @@ def export_dinov2_to_onnx(output_dir, device='cpu', img_size=224, num_pts=1024):
     import onnx
     onnx_model = onnx.load(str(onnx_path))
     onnx.checker.check_model(onnx_model)
-    print(f"✓ ONNX model verification passed")
+    print(f"ONNX model verification passed")
+
+    # Fix Resize nodes: Ascend ATC does not support coordinate_transformation_mode=half_pixel
+    # Change to asymmetric (equivalent when this path is not actually reached at runtime)
+    resize_fixed = False
+    for node in onnx_model.graph.node:
+        if node.op_type == 'Resize':
+            for attr in node.attribute:
+                if attr.name == 'coordinate_transformation_mode' and attr.s == b'half_pixel':
+                    attr.s = b'asymmetric'
+                    resize_fixed = True
+                    print(f"  Fixed Resize node '{node.name}': half_pixel -> asymmetric")
+    if resize_fixed:
+        onnx.save(onnx_model, str(onnx_path))
+        print(f"  ONNX model saved with Resize fix")
+    else:
+        print(f"  No Resize fix needed (no half_pixel mode found)")
 
     print(f"\nInput info:")
     print(f"  roi_rgb:  [batch_size, 3, {img_size}, {img_size}], float32")

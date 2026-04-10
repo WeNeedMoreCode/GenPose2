@@ -2,6 +2,7 @@
 # OM Model Evaluation Script
 # Uses separate PointNet2 OM and ScoreNet OM models for better performance
 CUDA_VISIBLE_DEVICES=0 python runners/evaluation_single.py \
+--pretrained_dino_model_path onnx_models/dinov2_vits14.om \
 --pretrained_pointnet2_score_model_path onnx_models/pointnet2_from_score.om \
 --pretrained_pointnet2_energy_model_path onnx_models/pointnet2_from_energy.om \
 --pretrained_score_model_path onnx_models/scorenet.om \

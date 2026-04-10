@@ -34,6 +34,8 @@ def get_config():
     parser.add_argument('--s_theta_mode', type=str, default='score') 
     parser.add_argument('--norm_energy', type=str, default='identical')
     parser.add_argument('--dino', type=str, default='pointwise') # none / global / pointwise
+    parser.add_argument('--pretrained_dino_model_path', type=str, default=None,
+                        help='Path to DINOv2 OM model for inference. If None, uses torch.hub PyTorch model.')
     parser.add_argument('--scale_embedding', type=int, default=180)
     
     

@@ -102,13 +102,20 @@ def get_dino_model():
     """
     global _dino_model
     if _dino_model is None and cfg.dino != 'none':
-        print("Loading DINOv2 model for preprocessing...")
-        import torch.hub
-        _dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14').to(cfg.device)
-        # Intentionally NOT calling eval() to match GFObjectPose behavior (posenet.py:44-45)
-        # _dino_model.eval()  # <-- DO NOT enable this
-        _dino_model.requires_grad_(False)
-        print("DINOv2 loaded successfully")
+        dino_om_path = getattr(cfg, 'pretrained_dino_model_path', None)
+        if dino_om_path is not None and dino_om_path.endswith('.om'):
+            print(f"Loading DINOv2 OM model: {dino_om_path}")
+            from networks.score_wrapper import DINOv2Wrapper
+            _dino_model = DINOv2Wrapper(dino_om_path, device=cfg.device)
+            print("DINOv2 OM loaded successfully")
+        else:
+            print("Loading DINOv2 model for preprocessing...")
+            import torch.hub
+            _dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14').to(cfg.device)
+            # Intentionally NOT calling eval() to match GFObjectPose behavior (posenet.py:44-45)
+            # _dino_model.eval()  # <-- DO NOT enable this
+            _dino_model.requires_grad_(False)
+            print("DINOv2 loaded successfully")
     return _dino_model
 
 
@@ -129,24 +136,25 @@ def extract_dino_features(batch_sample):
     if dino is None:
         return None
 
-
     roi_rgb = batch_sample['roi_rgb']  # [B, 3, H, W]
     roi_xs = batch_sample['roi_xs']    # [B, 1024]
     roi_ys = batch_sample['roi_ys']    # [B, 1024]
 
-    # Extract DINOv2 features from penultimate layer
-    # Note: No torch.no_grad() wrapper to match original behavior in posenet.py:113-121
-    # Note: No n=1 parameter to match original behavior in posenet.py:115
-    feat = dino.get_intermediate_layers(roi_rgb)[0]  # [B, 384, H/14, W/14]
+    # OM path: DINOv2ExportWrapper handles everything internally
+    # (forward_features + gather), returns numpy
+    if hasattr(dino, 'is_om') and dino.is_om:
+        rgb_feat_np = dino(roi_rgb, roi_xs, roi_ys)
+        return torch.from_numpy(rgb_feat_np).to(cfg.device)
 
-    # Extract features for each point based on their (x, y) coordinates
+    # PyTorch path: original get_intermediate_layers + gather
+    feat = dino.get_intermediate_layers(roi_rgb)[0]  # [B, 256, 384]
+
     xs = roi_xs // 14
     ys = roi_ys // 14
     pos = xs * 16 + ys  # 224x224 input -> 16x16 feature map
     pos = torch.unsqueeze(pos, -1).expand(-1, -1, 384)
 
     rgb_feat = torch.gather(feat, 1, pos)  # [B, 1024, 384]
-    # Match original behavior in posenet.py:121 - use requires_grad_(False) instead of detach()
     rgb_feat.requires_grad_(False)
 
     return rgb_feat

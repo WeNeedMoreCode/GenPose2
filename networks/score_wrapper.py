@@ -614,6 +614,7 @@ class DINOv2Wrapper(nn.Module):
         super().__init__()
         self.checkpoint_path = Path(checkpoint_path)
         self.device = device
+        self.is_om = True
 
         print(f"Loading DINOv2 OM model: {self.checkpoint_path}")
         self.om_session = InferSession(0, str(self.checkpoint_path))
