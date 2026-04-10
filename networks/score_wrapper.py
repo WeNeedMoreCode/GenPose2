@@ -105,10 +105,9 @@ class ScoreNetworkWrapper(nn.Module):
         Input: pts, rgb_feat, sampled_pose, t
         Output: score
         """
-        if isinstance(self.device, str) and 'npu:' in self.device:
-            device_id = int(self.device.split(':')[1])
-        else:
-            device_id = 0
+
+        device_id = int(self.device.split(':')[1])
+
 
         # Load metadata
         metadata_path = metadata_path = self.checkpoint_path.parent / f"{self.checkpoint_path.stem}_metadata.json"
@@ -161,32 +160,14 @@ class ScoreNetworkWrapper(nn.Module):
             # OM model inference (end-to-end: PointNet2 + ScoreNet)
             # Convert torch tensors to numpy
             inputs = [
-                pts_feat.cpu().numpy().astype(np.float32),  # Actually raw pts
+                pts_feat,
+                sampled_pose,
+                t
             ]
-
-            # Check if rgb_feat is used (based on metadata)
-            use_rgb_feat = True
-            if hasattr(self, 'metadata') and self.metadata is not None:
-                use_rgb_feat = self.metadata.get('metadata', {}).get('use_rgb_feat', True)
-
-            if use_rgb_feat and rgb_feat is not None:
-                inputs.append(rgb_feat.cpu().numpy().astype(np.float32))
-
-            inputs.extend([
-                sampled_pose.cpu().numpy().astype(np.float32),
-                t.cpu().numpy().astype(np.float32)
-            ])
-
             # Run OM inference
+            
             outputs = self.score_net_om.infer(inputs)
-
-            # Convert back to torch tensor
-            if isinstance(outputs, (list, tuple)) and len(outputs) == 1:
-                score = torch.from_numpy(outputs[0])
-            else:
-                score = torch.from_numpy(outputs)
-
-            return score.to(self.device)
+            return outputs[0]
 
         else:
             # PyTorch model inference (ScoreNet only, pts_feat already extracted)
@@ -203,6 +184,7 @@ class ScoreNetworkWrapper(nn.Module):
                 score = self.pose_score_net(data)
 
             return score
+
 
     def get_score(self, data):
         """
@@ -221,31 +203,56 @@ class ScoreNetworkWrapper(nn.Module):
             data['t']
         )
 
+    def forward_numpy(self, pts_feat, rgb_feat, sampled_pose, t):
+        """
+        Forward pass for OM: numpy in, numpy out. No conversion needed.
+
+        Args:
+            pts_feat: numpy [batch_size, 1024] float32
+            rgb_feat: None or numpy float32
+            sampled_pose: numpy [batch_size, 9] float32
+            t: numpy [batch_size, 1] float32
+        Returns:
+            score: numpy [batch_size, 9] float32
+        """
+        inputs = [pts_feat]
+
+        use_rgb_feat = True
+        if hasattr(self, 'metadata') and self.metadata is not None:
+            use_rgb_feat = self.metadata.get('metadata', {}).get('use_rgb_feat', True)
+
+        if use_rgb_feat and rgb_feat is not None:
+            inputs.append(rgb_feat)
+
+        inputs.extend([sampled_pose, t])
+
+        outputs = self.score_net_om.infer(inputs)
+
+        if isinstance(outputs, (list, tuple)) and len(outputs) == 1:
+            return outputs[0]
+        return outputs
+
     def extract_pts_feat(self, pts, rgb_feat):
         """
         Extract point cloud features using PointNet2 encoder.
 
-        This method provides a unified interface that internally uses:
-        - PyTorch PointNet2 (if self.is_om=False or no OM model loaded)
-        - OM PointNet2 (if pointnet2_om is available)
+        OM path: returns numpy (avoids conversion in ODE loop).
+        PTH path: returns tensor.
 
         Args:
             pts: [batch_size, 1024, 3] - Point cloud coordinates
             rgb_feat: [batch_size, 1024, 384] - DINOv2 features
 
         Returns:
-            pts_feat: [batch_size, 1024] - Encoded point cloud features
+            pts_feat: numpy or tensor [batch_size, 1024]
         """
-        # Concatenate pts and rgb_feat before passing to encoder
-        # Both PyTorch and OM paths now expect concatenated input
         with torch.no_grad():
             pointcloud = torch.cat([pts, rgb_feat], dim=-1)
 
         if self.pointnet2_om is not None:
-            # Use OM PointNet2 encoder
+            # OM path: returns numpy directly
             return self.pointnet2_om(pointcloud)
         else:
-            # Use PyTorch PointNet2 encoder
             with torch.no_grad():
                 return self.pts_encoder(pointcloud)
 
@@ -281,13 +288,14 @@ class ODESamplerExternal:
         Args:
             score_network: ScoreNetworkWrapper instance (or compatible callable)
             prior_fn: Prior sampling function (from SDE)
-            sde_coeff: SDE coefficient function (from SDE)
+            sde_coeff: SDE coefficient function (numpy version for OM, tensor version for PTH)
             device: Device to run on
         """
         self.score_network = score_network
         self.prior_fn = prior_fn
         self.sde_coeff = sde_coeff
         self.device = device
+        self.use_numpy = score_network.is_om
 
     def score_eval_wrapper(self, data):
         """
@@ -299,17 +307,10 @@ class ODESamplerExternal:
         Returns:
             score: Score as numpy array
         """
-        with torch.no_grad():
-            if hasattr(self.score_network, 'get_score'):
-                score = self.score_network.get_score(data)
-            else:
-                score = self.score_network(
-                    data['pts_feat'],
-                    data['rgb_feat'],
-                    data['sampled_pose'],
-                    data['t']
-                )
-        return score.cpu().numpy().reshape((-1,))
+        return self.score_network(
+            data['pts_feat'], data['rgb_feat'],
+            data['sampled_pose'], data['t']
+        ).reshape((-1,))
 
     def sample(self, pts_feat, rgb_feat, batch_size, pose_dim,
                eps=1e-5, T=1.0, rtol=1e-5, atol=1e-5, denoise=True, init_x=None, pts_center=None):
@@ -347,18 +348,27 @@ class ODESamplerExternal:
         }
 
         def ode_func(t, x):
-            """ODE function for use by the ODE solver."""
-            x_tensor = torch.tensor(x.reshape(-1, pose_dim), dtype=torch.float32, device=self.device)
-            time_steps = torch.ones(batch_size, device=self.device).unsqueeze(-1) * t
-            drift, diffusion = self.sde_coeff(torch.tensor(t))
-            drift = drift.cpu().numpy()
-            diffusion = diffusion.cpu().numpy()
+            # import ipdb;ipdb.set_trace()
+            if self.score_network.is_om:
+                # numpy path: no tensor conversion needed
+                data['sampled_pose'] = x.reshape(-1, pose_dim).astype(np.float32)
+                data['t'] = np.full((batch_size, 1), t, dtype=np.float32)
+                drift, diffusion = self.sde_coeff(t)
+                score = self.score_eval_wrapper(data)
+                return drift - 0.5 * (diffusion**2) * score
+            else:
+                # tensor path
+                x_tensor = torch.tensor(x.reshape(-1, pose_dim), dtype=torch.float32, device=self.device)
+                time_steps = torch.ones(batch_size, device=self.device).unsqueeze(-1) * t
+                drift, diffusion = self.sde_coeff(torch.tensor(t))
+                drift = drift.cpu().numpy()
+                diffusion = diffusion.cpu().numpy()
 
-            data['sampled_pose'] = x_tensor
-            data['t'] = time_steps
+                data['sampled_pose'] = x_tensor
+                data['t'] = time_steps
 
-            score = self.score_eval_wrapper(data)
-            return drift - 0.5 * (diffusion**2) * score
+                score = self.score_eval_wrapper(data).cpu().numpy()
+                return drift - 0.5 * (diffusion**2) * score
 
         # Run ODE solver
         res = integrate.solve_ivp(
@@ -370,17 +380,24 @@ class ODESamplerExternal:
         xs = torch.tensor(res.y, device=self.device, dtype=torch.float32).T.view(-1, batch_size, pose_dim)
         x = torch.tensor(res.y[:, -1], device=self.device, dtype=torch.float32).reshape(shape)
 
-        # Denoising step (if requested)
-        if denoise:
-            # Reverse diffusion predictor for denoising (same as original cond_ode_sampler:221)
-            vec_eps = torch.ones((x.shape[0], 1), device=x.device) * eps
-            drift, diffusion = self.sde_coeff(vec_eps)
-            data['sampled_pose'] = x.float()
-            data['t'] = vec_eps
-            grad = self.score_network.get_score(data)  # Returns tensor, not numpy
-            drift = drift - diffusion**2 * grad
-            mean_x = x + drift * ((1 - eps) / 1000)
-            x = mean_x
+        # Reverse diffusion predictor for denoising (same as original cond_ode_sampler:221)
+
+        vec_eps = eps if self.score_network.is_om else torch.ones((x.shape[0], 1), device=x.device) * eps
+        drift, diffusion = self.sde_coeff(vec_eps)
+        data['sampled_pose'] = x.float()
+        data['t'] = vec_eps
+        if self.score_network.is_om:
+            grad_np = self.score_network(
+                data['pts_feat'], data['rgb_feat'],
+                x.cpu().numpy().astype(np.float32),
+                np.full((x.shape[0], 1), eps, dtype=np.float32)
+            )
+            grad = torch.from_numpy(grad_np).to(self.device)
+        else:
+            grad = self.score_network.get_score(data)
+        drift = drift - diffusion**2 * grad
+        mean_x = x + drift * ((1 - eps) / 1000)
+        x = mean_x
 
         # Normalize rotation (same as original cond_ode_sampler:226-232)
         from utils.misc import normalize_rotation
@@ -495,21 +512,17 @@ class PointNet2EncoderWrapper(nn.Module):
             pointcloud: [batch_size, 1024, 387] - Concatenated pts + rgb_feat
 
         Returns:
-            pts_feat: [batch_size, 1024] - Encoded point cloud features
+            pts_feat: numpy [batch_size, 1024] - Encoded point cloud features (float32)
         """
+        # Convert torch tensor to numpy
         # Convert torch tensor to numpy
         input_data = pointcloud.cpu().numpy().astype(np.float32)
 
         # Run OM inference
         outputs = self.om_session.infer([input_data])
 
-        # Convert back to torch tensor
-        if isinstance(outputs, (list, tuple)) and len(outputs) == 1:
-            pts_feat = torch.from_numpy(outputs[0])
-        else:
-            pts_feat = torch.from_numpy(outputs)
+        return outputs[0]
 
-        return pts_feat.to(self.device)
 
 
 def create_pointnet2_encoder(checkpoint_path, device='npu:0'):
@@ -547,24 +560,14 @@ class EnergyNetWrapper(nn.Module):
     def forward(self, pts_feat, sampled_pose, t):
         """
         Args:
-            pts_feat: [batch_size, 1024]
-            sampled_pose: [batch_size, 9]
-            t: [batch_size, 1]
+            pts_feat: numpy [batch_size, 1024] or tensor
+            sampled_pose: numpy [batch_size, 9] or tensor
+            t: numpy [batch_size, 1] or tensor
         Returns:
-            energy: [batch_size, 2]
+            energy: numpy [batch_size, 2]
         """
-        input_pts = pts_feat.cpu().numpy().astype(np.float32)
-        input_pose = sampled_pose.cpu().numpy().astype(np.float32)
-        input_t = t.cpu().numpy().astype(np.float32)
-
-        outputs = self.om_session.infer([input_pts, input_pose, input_t])
-
-        if isinstance(outputs, (list, tuple)):
-            energy = torch.from_numpy(outputs[0])
-        else:
-            energy = torch.from_numpy(outputs)
-
-        return energy.to(self.device)
+        outputs = self.om_session.infer([pts_feat, sampled_pose, t])
+        return outputs[0]
 
 
 class ScaleNetWrapper(nn.Module):
@@ -588,19 +591,49 @@ class ScaleNetWrapper(nn.Module):
     def forward(self, pts_feat, axes):
         """
         Args:
-            pts_feat: [batch_size, 1024]
-            axes: [batch_size, 3, 3]
+            pts_feat: numpy [batch_size, 1024] or tensor
+            axes: numpy [batch_size, 3, 3] or tensor
         Returns:
-            length: [batch_size, 3]
+            length: tensor [batch_size, 3]
         """
-        input_pts = pts_feat.cpu().numpy().astype(np.float32)
         input_axes = axes.cpu().numpy().astype(np.float32)
+        outputs = self.om_session.infer([pts_feat, input_axes])
+        return torch.from_numpy(outputs[0])
 
-        outputs = self.om_session.infer([input_pts, input_axes])
 
-        if isinstance(outputs, (list, tuple)):
-            length = torch.from_numpy(outputs[0])
-        else:
-            length = torch.from_numpy(outputs)
+class DINOv2Wrapper(nn.Module):
+    """
+    Wrapper for DINOv2 OM model.
 
-        return length.to(self.device)
+    Args:
+        checkpoint_path: Path to OM model (.om file)
+        device: Device to run inference on (e.g., 'npu:0')
+    """
+
+    def __init__(self, checkpoint_path, device='npu:0'):
+        super().__init__()
+        self.checkpoint_path = Path(checkpoint_path)
+        self.device = device
+
+        print(f"Loading DINOv2 OM model: {self.checkpoint_path}")
+        self.om_session = InferSession(0, str(self.checkpoint_path))
+        print(f"✓ DINOv2 OM model loaded successfully")
+
+    def forward(self, roi_rgb, roi_xs, roi_ys):
+        """
+        Args:
+            roi_rgb: numpy or tensor [batch_size, 3, 224, 224]
+            roi_xs: numpy or tensor [batch_size, 1024] int64
+            roi_ys: numpy or tensor [batch_size, 1024] int64
+        Returns:
+            rgb_feat: numpy [batch_size, 1024, 384]
+        """
+        if isinstance(roi_rgb, torch.Tensor):
+            roi_rgb = roi_rgb.cpu().numpy().astype(np.float32)
+        if isinstance(roi_xs, torch.Tensor):
+            roi_xs = roi_xs.cpu().numpy().astype(np.int64)
+        if isinstance(roi_ys, torch.Tensor):
+            roi_ys = roi_ys.cpu().numpy().astype(np.int64)
+
+        outputs = self.om_session.infer([roi_rgb, roi_xs, roi_ys])
+        return outputs[0]

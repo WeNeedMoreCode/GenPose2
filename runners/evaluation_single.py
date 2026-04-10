@@ -62,33 +62,6 @@ perf_stats = {
 }
 
 
-def apply_spec_ops_patches():
-    def patched_bilinear2d(input, output_size, align_corners,scale_factors):
-        original_device = input.device
-        input_cpu = input.cpu()
-
-        result_tmp = _original_bilinear2d(
-            input_cpu,
-            output_size,
-            align_corners, 
-            scale_factors,
-        )
-        result = result_tmp.to(device=original_device)
-        return result
-
-    def patched_max_pool2d(input, kernel_size):
-        original_device = input.device
-        input_cpu = input.cpu()
-        result_tmp = _original_max_pool2d(input_cpu, kernel_size)
-        result = result_tmp.to(device=original_device)
-        return result
-    
-    _original_bilinear2d = torch._C._nn.upsample_bilinear2d
-    _original_max_pool2d = F.max_pool2d
-
-    torch._C._nn.upsample_bilinear2d = patched_bilinear2d
-    F.max_pool2d = patched_max_pool2d
-
 def get_dataloader():
     dataset = Omni6DPoseDataSet(
         cfg=cfg,
@@ -265,12 +238,16 @@ def inference_score_decoupled(save_path):
         pointnet2_om_path=pointnet2_om_path  # Pass None for PyTorch, path for OM
     )
 
-
-
+    if is_om_model:
+        from networks.gf_algorithms.sde import ve_sde_numpy
+        sde_coeff_fn = ve_sde_numpy
+    else:
+        sde_coeff_fn = sde_fn
+    sde_dir = {'prior_fn': prior_fn, 'sde_fn': sde_coeff_fn}
     # Create ODE sampler with the Score Network
     sampler = create_ode_sampler(
         score_network=score_net,
-        sde={'prior_fn': prior_fn, 'sde_fn': sde_fn},
+        sde=sde_dir,
         device=cfg.device
     )
 
@@ -311,7 +288,10 @@ def inference_score_decoupled(save_path):
         init_x_all = prior_fn((bs, cfg.eval_repeat_num, pose_dim), T=cfg.T0).to(cfg.device)
 
         # Repeat features and init_x to process all at once
-        pts_feat_repeated = pts_feat.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
+        if is_om_model:
+            pts_feat_repeated = np.repeat(pts_feat[np.newaxis, ...], cfg.eval_repeat_num, axis=1).reshape(bs * cfg.eval_repeat_num, -1)
+        else:
+            pts_feat_repeated = pts_feat.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
 
         # In pointwise mode, rgb_feat is already fused into pts_feat, so pass None
         rgb_feat_repeated = None
@@ -342,8 +322,8 @@ def inference_score_decoupled(save_path):
         # Save pred_pose and features
         all_pred_pose.append(pred_pose)
         all_score_feature.append({
-            'pts_feat': pts_feat.cpu(),
-            'rgb_feat': (None if rgb_feat is None else rgb_feat.cpu()),
+            'pts_feat': pts_feat,
+            'rgb_feat': rgb_feat,
         })
 
         torch.npu.synchronize()
@@ -366,18 +346,13 @@ def inference_energy(score_path, save_path, energy_om_path=None, pointnet2_energ
     assert os.path.exists(score_path)
     all_pred_pose, all_score_feature = pickle.load(open(score_path, 'rb'))
 
-    use_om = energy_om_path is not None and energy_om_path.endswith('.om')
-    if use_om:
+    if is_om_model:
         from networks.score_wrapper import EnergyNetWrapper, PointNet2EncoderWrapper
         energy_net = EnergyNetWrapper(energy_om_path, device=cfg.device)
         # Load PointNet2 from energy checkpoint for pts_feat extraction
-        if pointnet2_energy_om_path is not None:
-            pointnet2_encoder = PointNet2EncoderWrapper(pointnet2_energy_om_path, device=cfg.device)
-        else:
-            pointnet2_encoder = None
+        pointnet2_encoder = PointNet2EncoderWrapper(pointnet2_energy_om_path, device=cfg.device)
         print(f"Using EnergyNet OM: {energy_om_path}")
-        if pointnet2_encoder is not None:
-            print(f"Using PointNet2 (from energy): {pointnet2_energy_om_path}")
+        print(f"Using PointNet2 (from energy): {pointnet2_energy_om_path}")
     else:
         cfg.agent_type = 'energy'
         energy_agent = PoseNet(cfg)
@@ -402,30 +377,26 @@ def inference_energy(score_path, save_path, energy_om_path=None, pointnet2_energ
         if rgb_feat is not None:
             batch_sample['precomputed_rgb_feat'] = rgb_feat
 
-        if use_om:
+        if is_om_model:
             bs = batch_sample['pts'].shape[0]
             repeat_num = all_pred_pose[i].shape[1]
 
-            # Re-extract pts_feat to align with PTH path
-            if pointnet2_encoder is not None:
-                with torch.no_grad():
-                    pointcloud = torch.cat([batch_sample['pts'], rgb_feat], dim=-1)
-                    pts_feat = pointnet2_encoder(pointcloud)
-            else:
-                pts_feat = all_score_feature[i]['pts_feat'].to(cfg.device)
+            with torch.no_grad():
+                pointcloud = torch.cat([batch_sample['pts'], rgb_feat], dim=-1)
+                pts_feat = pointnet2_encoder(pointcloud)
 
             # Repeat pts_feat
-            repeated_pts_feat = pts_feat.unsqueeze(1).repeat(1, repeat_num, 1).view(bs * repeat_num, -1)
+            repeated_pts_feat = np.repeat(pts_feat[np.newaxis, ...], repeat_num, axis=1).reshape(bs * repeat_num, -1)
 
             # Prepare sampled_pose with pts_center subtracted
-            pose_samples = all_pred_pose[i].clone().view(bs * repeat_num, -1).type_as(repeated_pts_feat)
+            pose_samples = all_pred_pose[i].clone().view(bs * repeat_num, -1).cpu().numpy().astype(np.float32)
             pts_center = batch_sample['pts_center']
-            repeated_pts_center = pts_center.unsqueeze(1).repeat(1, repeat_num, 1).view(bs * repeat_num, -1)
+            repeated_pts_center = pts_center.unsqueeze(1).repeat(1, repeat_num, 1).view(bs * repeat_num, -1).cpu().numpy().astype(np.float32)
             pose_samples[:, -3:] -= repeated_pts_center
 
             # Prepare t
             T = 1e-5
-            t = torch.ones(bs * repeat_num, 1).type_as(repeated_pts_feat) * T
+            t = np.full((bs * repeat_num, 1), T, dtype=np.float32)
 
             # OM inference
             with torch.no_grad():
@@ -439,7 +410,7 @@ def inference_energy(score_path, save_path, energy_om_path=None, pointnet2_energ
                 mode='test',
                 extract_feature=True
             )
-        all_pred_energy.append(pred_energy.cpu())
+        all_pred_energy.append(pred_energy)
 
         torch.npu.synchronize()
         elapsed = time.time() - start_time
@@ -457,12 +428,12 @@ def aggregate_pose(score_path, energy_path, save_path):
         return
     assert os.path.exists(score_path)
     all_pred_pose, _ = pickle.load(open(score_path, 'rb'))
-    if energy_path is not None:
-        assert os.path.exists(energy_path)
-        all_pred_energy = pickle.load(open(energy_path, 'rb'))
-    else:
-        all_pred_energy = [torch.ones(*(all_pred_pose[i].shape[:2]), 2) 
-                           for i in range(len(all_pred_pose))]
+
+    assert os.path.exists(energy_path)
+    all_pred_energy = pickle.load(open(energy_path, 'rb'))
+        # ensure tensors (OM energy path saves numpy)
+    if is_om_model:
+        all_pred_energy = [torch.from_numpy(i) for i in all_pred_energy]
 
     all_aggregated_pose = []
     total_samples = 0
@@ -506,7 +477,7 @@ def aggregate_pose(score_path, energy_path, save_path):
     
     pickle.dump(all_aggregated_pose, open(save_path, 'wb'))
 
-def inference_scale(score_path, aggregate_path, save_path, scale_om_path=None):
+def inference_scale(score_path, aggregate_path, save_path, scale_path=None):
     if os.path.exists(save_path):
         return
     assert os.path.exists(score_path)
@@ -548,11 +519,10 @@ def inference_scale(score_path, aggregate_path, save_path, scale_om_path=None):
         pickle.dump((all_aggregated_pose, all_final_length), open(save_path, 'wb'))
         return
 
-    use_om = scale_om_path is not None and scale_om_path.endswith('.om')
-    if use_om:
+    if is_om_model:
         from networks.score_wrapper import ScaleNetWrapper
-        scale_net = ScaleNetWrapper(scale_om_path, device=cfg.device)
-        print(f"Using ScaleNet OM: {scale_om_path}")
+        scale_net = ScaleNetWrapper(scale_path, device=cfg.device)
+        print(f"Using ScaleNet OM: {scale_path}")
     else:
         cfg.agent_type = 'scale'
         scale_agent = PoseNet(cfg)
@@ -567,10 +537,10 @@ def inference_scale(score_path, aggregate_path, save_path, scale_om_path=None):
         torch.npu.synchronize()
         start_time = time.time()
 
-        pts_feat = all_score_feature[i]['pts_feat'].to(cfg.device)
+        pts_feat = all_score_feature[i]['pts_feat']
         axes = all_aggregated_pose[i][:, :3, :3].to(cfg.device)
 
-        if use_om:
+        if is_om_model:
             with torch.no_grad():
                 length = scale_net(pts_feat, axes)
             cal_mat = axes  # pred_scale_func returns axes unchanged ("historical reasons")
@@ -745,7 +715,6 @@ def visualize_pose_distribution(score_path, dm_path):
 
 if __name__ == '__main__':
     dataloader = get_dataloader()
-    apply_spec_ops_patches()
     os.makedirs(f'results/evaluation_results/{cfg.result_dir}', exist_ok=True)
 
     score_model_name = '_'.join(cfg.pretrained_score_model_path.split('/')[-2:])
@@ -786,19 +755,14 @@ if __name__ == '__main__':
 
     aggregate_save_path = f'results/evaluation_results/{cfg.result_dir}/aggregated.pkl'
     energy_om_path = getattr(cfg, 'pretrained_energy_om_path', None) or getattr(cfg, 'pretrained_energy_model_path', None)
-    if energy_om_path is not None:
-        energy_model_name = '_'.join(energy_om_path.split('/')[-2:])
-        energy_save_path = f'results/evaluation_results/{cfg.result_dir}/energy_prediction_{energy_model_name}.pkl'
-        pointnet2_energy_om_path = getattr(cfg, 'pretrained_pointnet2_energy_model_path', None)
-        inference_energy(score_save_path, energy_save_path, energy_om_path=energy_om_path, pointnet2_energy_om_path=pointnet2_energy_om_path)
-        aggregate_pose(score_save_path, energy_save_path, aggregate_save_path)
-    else:
-        aggregate_pose(score_save_path, None, aggregate_save_path)
 
-    if cfg.pretrained_scale_model_path is not None:
-        scale_model_name = '_'.join(cfg.pretrained_scale_model_path.split('/')[-2:])
-    else:
-        scale_model_name = 'scale-none'
+    energy_model_name = '_'.join(energy_om_path.split('/')[-2:])
+    energy_save_path = f'results/evaluation_results/{cfg.result_dir}/energy_prediction_{energy_model_name}.pkl'
+    pointnet2_energy_om_path = getattr(cfg, 'pretrained_pointnet2_energy_model_path', None)
+    inference_energy(score_save_path, energy_save_path, energy_om_path=energy_om_path, pointnet2_energy_om_path=pointnet2_energy_om_path)
+    aggregate_pose(score_save_path, energy_save_path, aggregate_save_path)
+    scale_model_name = '_'.join(cfg.pretrained_scale_model_path.split('/')[-2:])
+
     cls_save_path = f'results/evaluation_results/{cfg.result_dir}/scale_prediction_{scale_model_name}.pkl'
     inference_scale(score_save_path, aggregate_save_path, cls_save_path, scale_om_path=cfg.pretrained_scale_model_path)
 

@@ -55,6 +55,8 @@ def convert_onnx_to_om(
         model_type = 'energy'
     elif 'scale' in onnx_path.stem:
         model_type = 'scale'
+    elif 'dinov2' in onnx_path.stem:
+        model_type = 'dinov2'
     else:
         model_type = 'unknown'
 
@@ -67,6 +69,7 @@ def convert_onnx_to_om(
         'pointnet2_scorenet': 16,
         'energy': 800,
         'scale': 16,
+        'dinov2': 16,
     }
 
     if batch_size is None:
@@ -158,6 +161,12 @@ def convert_onnx_to_om(
         input_shapes = {
             'pts_feat': f"{batch_size},1024",
             'axes': f"{batch_size},3,3"
+        }
+    elif model_type == 'dinov2':
+        input_shapes = {
+            'roi_rgb': f"{batch_size},3,224,224",
+            'roi_xs': f"{batch_size},1024",
+            'roi_ys': f"{batch_size},1024",
         }
     else:
         print(f"Error: Unknown model type '{model_type}'")

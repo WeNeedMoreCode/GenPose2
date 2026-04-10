@@ -30,9 +30,6 @@ class _PointnetSAModuleBase(nn.Module):
 
         xyz_flipped = xyz.transpose(1, 2).contiguous()
         idx = None
-        print('new_xyz',new_xyz)
-        print('self.npoint',self.npoint)
-        # import ipdb;ipdb.set_trace()
         idx = pointnet2_utils.furthest_point_sample(xyz, self.npoint)
         new_xyz = pointnet2_utils.gather_operation(
             xyz_flipped,

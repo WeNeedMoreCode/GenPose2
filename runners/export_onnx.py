@@ -506,10 +506,144 @@ def export_scale_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu')
 
 
 
+class DINOv2ExportWrapper(nn.Module):
+    """
+    ONNX-compatible wrapper for DINOv2 pointwise feature extraction.
+
+    Replaces get_intermediate_layers() with forward_features() for ONNX tracing.
+    Includes torch.gather for point-wise feature extraction.
+
+    Input:
+        roi_rgb:  [batch_size, 3, img_size, img_size]
+        roi_xs:   [batch_size, num_pts] int64
+        roi_ys:   [batch_size, num_pts] int64
+
+    Output:
+        rgb_feat: [batch_size, num_pts, 384]
+    """
+
+    def __init__(self, dinov2_model, dino_dim=384, img_size=224):
+        super().__init__()
+        self.dino = dinov2_model
+        self.dino_dim = dino_dim
+        self.patch_size = 14
+        self.feat_size = img_size // self.patch_size  # 16 for 224
+
+    def forward(self, roi_rgb, roi_xs, roi_ys):
+        feat = self.dino.forward_features(roi_rgb)
+        # dinov2_vits14 forward_features returns dict with 'x_norm_patchtokens'
+        # Shape: [B, num_patches+1, embed_dim] -> remove CLS token -> [B, 256, 384]
+        feat = feat['x_norm_patchtokens'][:, 1:, :]
+        B, N, C = feat.shape
+        H = W = self.feat_size
+        feat = feat.reshape(B, H, W, C).permute(0, 3, 1, 2)  # [B, 384, 16, 16]
+
+        xs = roi_xs // self.patch_size
+        ys = roi_ys // self.patch_size
+        pos = xs * self.feat_size + ys  # [B, num_pts]
+        pos = pos.unsqueeze(-1).expand(-1, -1, self.dino_dim)  # [B, num_pts, 384]
+
+        rgb_feat = torch.gather(feat, 1, pos)  # [B, num_pts, 384]
+        return rgb_feat
+
+
+def export_dinov2_to_onnx(output_dir, device='cpu', img_size=224, num_pts=1024):
+    """
+    Export DINOv2 (dinov2_vits14) to ONNX.
+
+    No patching applied - if export fails, the full error trace will be visible
+    so we can diagnose the exact issue on the remote server.
+
+    Args:
+        output_dir: Directory to save ONNX model
+        device: Device to load model on (use 'cpu' for ONNX export)
+        img_size: Input image size (default: 224)
+        num_pts: Number of points (default: 1024)
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n{'='*60}")
+    print(f"Exporting DINOv2 (dinov2_vits14) to ONNX")
+    print(f"{'='*60}")
+    print(f"\nConfiguration:")
+    print(f"  Image size:    {img_size}")
+    print(f"  Num points:    {num_pts}")
+    print(f"  Feature dim:   384")
+    print(f"  Feature map:   {img_size//14}x{img_size//14}")
+    print(f"  Device:        {device}")
+
+    # Load DINOv2
+    print(f"\nLoading DINOv2 model...")
+    import torch.hub
+    dino = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
+    dino = dino.to(device)
+    dino.requires_grad_(False)
+
+    # Verify forward_features output
+    print(f"\nVerifying forward_features output keys...")
+    dummy_rgb = torch.randn(1, 3, img_size, img_size, dtype=torch.float32).to(device)
+    feat_dict = dino.forward_features(dummy_rgb)
+    print(f"  Keys: {list(feat_dict.keys())}")
+    for k, v in feat_dict.items():
+        if hasattr(v, 'shape'):
+            print(f"  {k}: {v.shape}")
+
+    # Create wrapper and test
+    export_model = DINOv2ExportWrapper(dino, dino_dim=384, img_size=img_size)
+    export_model.eval()
+
+    dummy_xs = torch.randint(0, img_size, (1, num_pts), dtype=torch.int64).to(device)
+    dummy_ys = torch.randint(0, img_size, (1, num_pts), dtype=torch.int64).to(device)
+    with torch.no_grad():
+        test_out = export_model(dummy_rgb, dummy_xs, dummy_ys)
+    print(f"\nWrapper test: input {dummy_rgb.shape} -> output {test_out.shape}")
+
+    # Export
+    onnx_path = output_dir / "dinov2_vits14.onnx"
+    print(f"\nExporting to {onnx_path}...")
+
+    torch.onnx.export(
+        export_model,
+        (dummy_rgb, dummy_xs, dummy_ys),
+        str(onnx_path),
+        input_names=['roi_rgb', 'roi_xs', 'roi_ys'],
+        output_names=['rgb_feat'],
+        dynamic_axes={
+            'roi_rgb': {0: 'batch_size'},
+            'roi_xs': {0: 'batch_size'},
+            'roi_ys': {0: 'batch_size'},
+            'rgb_feat': {0: 'batch_size'},
+        },
+        opset_version=17,
+        verbose=False,
+        export_params=True,
+        do_constant_folding=True,
+        keep_initializers_as_inputs=False,
+        operator_export_type=torch.onnx.OperatorExportTypes.ONNX,
+    )
+    print(f"✓ ONNX export successful: {onnx_path}")
+
+    # Verify ONNX model
+    import onnx
+    onnx_model = onnx.load(str(onnx_path))
+    onnx.checker.check_model(onnx_model)
+    print(f"✓ ONNX model verification passed")
+
+    print(f"\nInput info:")
+    print(f"  roi_rgb:  [batch_size, 3, {img_size}, {img_size}], float32")
+    print(f"  roi_xs:   [batch_size, {num_pts}], int64")
+    print(f"  roi_ys:   [batch_size, {num_pts}], int64")
+    print(f"\nOutput info:")
+    print(f"  rgb_feat: [batch_size, {num_pts}, 384], float32")
+
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description='Export GenPose2 Networks to ONNX')
     parser.add_argument('--agent_type', type=str, default='score',
-                        choices=['score', 'energy', 'scale', 'pointnet2_from_score', 'pointnet2_from_energy', 'pointnet2_scorenet'],
+                        choices=['score', 'energy', 'scale', 'pointnet2_from_score', 'pointnet2_from_energy', 'pointnet2_scorenet', 'dinov2'],
                         help='Agent type to export')
     parser.add_argument('--output_dir', type=str, default='./onnx_models',
                         help='Output directory for ONNX models')
@@ -674,6 +808,21 @@ def main():
             print(f"{'='*60}")
             print(f"\nExported files:")
             print(f"  - {args.output_dir}/pointnet2_scorenet.onnx")
+
+    elif args.agent_type == 'dinov2':
+        # DINOv2 doesn't need a checkpoint - loaded from torch.hub
+        img_size = getattr(cfg, 'img_size', 224)
+        success = export_dinov2_to_onnx(args.output_dir, args.device, img_size=img_size)
+
+        if success:
+            print(f"\n{'='*60}")
+            print("Export completed successfully!")
+            print(f"{'='*60}")
+            print(f"\nExported files:")
+            print(f"  - {args.output_dir}/dinov2_vits14.onnx")
+            print(f"\nNext steps:")
+            print(f"1. Convert ONNX to OM using ATC tool:")
+            print(f"   python runners/onnx2om.py --onnx_path {args.output_dir}/dinov2_vits14.onnx")
 
     if success:
         print(f"\nNext steps:")

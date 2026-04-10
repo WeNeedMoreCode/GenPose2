@@ -24,6 +24,13 @@ def ve_sde(t, sigma_min=0.01, sigma_max=90):
     diffusion_coeff = sigma * torch.sqrt(torch.tensor(2 * (np.log(sigma_max) - np.log(sigma_min)), device=device))
     return drift_coeff, diffusion_coeff
 
+def ve_sde_numpy(t, sigma_min=0.01, sigma_max=90):
+    """Pure numpy version of ve_sde for ODE solver integration."""
+    sigma = sigma_min * (sigma_max / sigma_min) ** t
+    drift_coeff = 0.0
+    diffusion_coeff = float(sigma) * np.sqrt(2 * (np.log(sigma_max) - np.log(sigma_min)))
+    return drift_coeff, diffusion_coeff
+
 def ve_prior(shape, sigma_min=0.01, sigma_max=90, T=1.0):
     _, sigma_max_prior = ve_marginal_prob(None, T, sigma_min=sigma_min, sigma_max=sigma_max)
     torch.manual_seed(0)
