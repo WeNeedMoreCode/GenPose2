@@ -246,14 +246,13 @@ class ScoreNetworkWrapper(nn.Module):
         Returns:
             pts_feat: numpy or tensor [batch_size, 1024]
         """
-        with torch.no_grad():
-            pointcloud = torch.cat([pts, rgb_feat], dim=-1)
-
         if self.pointnet2_om is not None:
-            # OM path: returns numpy directly
+            # OM path: pts and rgb_feat are numpy
+            pointcloud = np.concatenate([pts, rgb_feat], axis=-1)
             return self.pointnet2_om(pointcloud)
         else:
             with torch.no_grad():
+                pointcloud = torch.cat([pts, rgb_feat], dim=-1)
                 return self.pts_encoder(pointcloud)
 
 

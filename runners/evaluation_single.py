@@ -27,7 +27,7 @@ from networks.posenet_agent import PoseNet
 from networks.reward import sort_poses_by_energy, ranking_loss
 from networks.score_wrapper import create_score_network, create_ode_sampler
 from networks.gf_algorithms.sde import init_sde
-from datasets.datasets_omni6dpose import Omni6DPoseDataSet, array_to_SymLabel, array_to_CameraIntrinsicsBase, process_batch
+from datasets.datasets_omni6dpose import Omni6DPoseDataSet, array_to_SymLabel, array_to_CameraIntrinsicsBase, process_batch, process_batch_numpy
 from utils.metrics import get_rot_matrix
 from utils.transforms import matrix_to_quaternion, quaternion_to_matrix
 from utils.misc import average_quaternion_batch
@@ -140,11 +140,9 @@ def extract_dino_features(batch_sample):
     roi_xs = batch_sample['roi_xs']    # [B, 1024]
     roi_ys = batch_sample['roi_ys']    # [B, 1024]
 
-    # OM path: DINOv2ExportWrapper handles everything internally
-    # (forward_features + gather), returns numpy
-    if hasattr(dino, 'is_om') and dino.is_om:
-        rgb_feat_np = dino(roi_rgb, roi_xs, roi_ys)
-        return torch.from_numpy(rgb_feat_np).to(cfg.device)
+    # OM path: DINOv2Wrapper returns numpy, keep as numpy throughout
+    if getattr(dino, 'is_om', False):
+        return dino(roi_rgb, roi_xs, roi_ys)
 
     # PyTorch path: original get_intermediate_layers + gather
     feat = dino.get_intermediate_layers(roi_rgb)[0]  # [B, 256, 384]
@@ -268,11 +266,14 @@ def inference_score_decoupled(save_path):
         torch.npu.synchronize()
         start_time = time.time()
 
-        batch_sample = process_batch(
-            batch_sample=test_batch,
-            device=cfg.device,
-            pose_mode=cfg.pose_mode,
-        )
+        if is_om_model:
+            batch_sample = process_batch_numpy(test_batch, pose_mode=cfg.pose_mode)
+        else:
+            batch_sample = process_batch(
+                batch_sample=test_batch,
+                device=cfg.device,
+                pose_mode=cfg.pose_mode,
+            )
 
         # Extract DINOv2 features as preprocessing
         rgb_feat = extract_dino_features(batch_sample)
@@ -281,11 +282,17 @@ def inference_score_decoupled(save_path):
 
         # Extract point cloud features using unified interface
         # Automatically uses OM PointNet2 (if available) or PyTorch PointNet2
-        with torch.no_grad():
+        if is_om_model:
             pts_feat = score_net.extract_pts_feat(
                 pts=batch_sample['pts'],
                 rgb_feat=rgb_feat
             )
+        else:
+            with torch.no_grad():
+                pts_feat = score_net.extract_pts_feat(
+                    pts=batch_sample['pts'],
+                    rgb_feat=rgb_feat
+                )
 
         # Get batch info
         bs = batch_sample['pts'].shape[0]
@@ -305,8 +312,12 @@ def inference_score_decoupled(save_path):
         rgb_feat_repeated = None
 
         init_x_repeated = init_x_all.view(bs * cfg.eval_repeat_num, pose_dim)
-        pts_center_repeated = None if pts_center is None else \
-            pts_center.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
+        if is_om_model:
+            pts_center_repeated = None if pts_center is None else \
+                np.repeat(pts_center[:, np.newaxis, :], cfg.eval_repeat_num, axis=1).reshape(bs * cfg.eval_repeat_num, -1)
+        else:
+            pts_center_repeated = None if pts_center is None else \
+                pts_center.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
 
         # Single call to sampler for all repeats
         with torch.no_grad():
@@ -374,11 +385,14 @@ def inference_energy(score_path, save_path, energy_om_path=None, pointnet2_energ
         torch.npu.synchronize()
         start_time = time.time()
 
-        batch_sample = process_batch(
-            batch_sample = test_batch,
-            device=cfg.device,
-            pose_mode=cfg.pose_mode,
-        )
+        if is_om_model:
+            batch_sample = process_batch_numpy(test_batch, pose_mode=cfg.pose_mode)
+        else:
+            batch_sample = process_batch(
+                batch_sample = test_batch,
+                device=cfg.device,
+                pose_mode=cfg.pose_mode,
+            )
 
         # Extract DINOv2 features as preprocessing (outside the model)
         rgb_feat = extract_dino_features(batch_sample)
@@ -389,9 +403,8 @@ def inference_energy(score_path, save_path, energy_om_path=None, pointnet2_energ
             bs = batch_sample['pts'].shape[0]
             repeat_num = all_pred_pose[i].shape[1]
 
-            with torch.no_grad():
-                pointcloud = torch.cat([batch_sample['pts'], rgb_feat], dim=-1)
-                pts_feat = pointnet2_encoder(pointcloud)
+            pointcloud = np.concatenate([batch_sample['pts'], rgb_feat], axis=-1)
+            pts_feat = pointnet2_encoder(pointcloud)
 
             # Repeat pts_feat
             repeated_pts_feat = np.repeat(pts_feat[np.newaxis, ...], repeat_num, axis=1).reshape(bs * repeat_num, -1)
@@ -399,7 +412,7 @@ def inference_energy(score_path, save_path, energy_om_path=None, pointnet2_energ
             # Prepare sampled_pose with pts_center subtracted
             pose_samples = all_pred_pose[i].clone().view(bs * repeat_num, -1).cpu().numpy().astype(np.float32)
             pts_center = batch_sample['pts_center']
-            repeated_pts_center = pts_center.unsqueeze(1).repeat(1, repeat_num, 1).view(bs * repeat_num, -1).cpu().numpy().astype(np.float32)
+            repeated_pts_center = np.repeat(pts_center[:, np.newaxis, :], repeat_num, axis=1).reshape(bs * repeat_num, -1)
             pose_samples[:, -3:] -= repeated_pts_center
 
             # Prepare t
