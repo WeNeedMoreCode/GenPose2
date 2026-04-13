@@ -586,25 +586,26 @@ def export_dinov2_to_onnx(output_dir, device='cpu', img_size=224, num_pts=1024):
         npatch = x.shape[1] - 1
         N = self.pos_embed.shape[1] - 1
         if npatch == N and w == h:
-            return x
+            return self.pos_embed
         # Sizes don't match: pos_embed is for 518x518 (37x37 patches),
         # input is 224x224 (16x16 patches). Use bilinear instead of bicubic
         # (Ascend 310P only supports nearest/linear/bilinear for Resize).
+        # Returns only pos_embed (caller does x = x + result).
         import torch.nn.functional as F
         import math
         previous_dtype = x.dtype
         pos_embed = self.pos_embed.float()
-        cls_pos_embed = pos_embed[0, 0:1, :].unsqueeze(0)
-        pos_embed = pos_embed[0, 1:, :]
-        dim = pos_embed.shape[-1]
+        class_pos_embed = pos_embed[:, 0]          # [1, dim]
+        patch_pos_embed = pos_embed[:, 1:]         # [1, N, dim]
+        dim = x.shape[-1]
         w0 = h0 = int(math.sqrt(N))
-        target_w = target_h = int(math.sqrt(npatch))
-        pos_embed = pos_embed.reshape(1, w0, h0, dim).permute(0, 3, 1, 2)
-        pos_embed = F.interpolate(pos_embed, size=(target_h, target_w),
-                                  mode='bilinear', align_corners=False)
-        pos_embed = pos_embed.permute(0, 2, 3, 1).reshape(1, -1, dim)
-        pos_embed = torch.cat((cls_pos_embed, pos_embed), dim=1)
-        return (x + pos_embed).to(previous_dtype)
+        target_w = w // self.patch_size
+        target_h = h // self.patch_size
+        patch_pos_embed = patch_pos_embed.reshape(1, w0, h0, dim).permute(0, 3, 1, 2)
+        patch_pos_embed = F.interpolate(patch_pos_embed, size=(target_h, target_w),
+                                        mode='bilinear', align_corners=False)
+        patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).reshape(1, -1, dim)
+        return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1).to(previous_dtype)
 
     import types
     dino.interpolate_pos_encoding = types.MethodType(_no_resize_interpolate_pos, dino)
