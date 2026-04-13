@@ -134,6 +134,15 @@ class ScoreNetworkWrapper(nn.Module):
         cfg.dino = 'pointwise'
         self.cfg = cfg
 
+    def release(self):
+        """Release OM resources (InferSession) to prevent NPU stream errors on exit."""
+        if self.is_om and hasattr(self, 'score_net_om') and self.score_net_om is not None:
+            self.score_net_om.free_resource()
+            self.score_net_om = None
+        if self.pointnet2_om is not None:
+            self.pointnet2_om.release()
+            self.pointnet2_om = None
+
     def forward(self, pts_feat, rgb_feat, sampled_pose, t):
         """
         Forward pass of Score Network.
@@ -545,6 +554,11 @@ class PointNet2EncoderWrapper(nn.Module):
 
         return outputs[0]
 
+    def release(self):
+        """Release OM resources to prevent NPU stream errors on exit."""
+        if hasattr(self, 'om_session') and self.om_session is not None:
+            self.om_session.free_resource()
+            self.om_session = None
 
 
 def create_pointnet2_encoder(checkpoint_path, device='npu:0'):
@@ -591,6 +605,12 @@ class EnergyNetWrapper(nn.Module):
         outputs = self.om_session.infer([pts_feat, sampled_pose, t])
         return outputs[0]
 
+    def release(self):
+        """Release OM resources to prevent NPU stream errors on exit."""
+        if hasattr(self, 'om_session') and self.om_session is not None:
+            self.om_session.free_resource()
+            self.om_session = None
+
 
 class ScaleNetWrapper(nn.Module):
     """
@@ -621,6 +641,12 @@ class ScaleNetWrapper(nn.Module):
         input_axes = axes.cpu().numpy().astype(np.float32)
         outputs = self.om_session.infer([pts_feat, input_axes])
         return torch.from_numpy(outputs[0])
+
+    def release(self):
+        """Release OM resources to prevent NPU stream errors on exit."""
+        if hasattr(self, 'om_session') and self.om_session is not None:
+            self.om_session.free_resource()
+            self.om_session = None
 
 
 class DINOv2Wrapper(nn.Module):
@@ -660,3 +686,9 @@ class DINOv2Wrapper(nn.Module):
 
         outputs = self.om_session.infer([roi_rgb, roi_xs, roi_ys])
         return outputs[0]
+
+    def release(self):
+        """Release OM resources to prevent NPU stream errors on exit."""
+        if hasattr(self, 'om_session') and self.om_session is not None:
+            self.om_session.free_resource()
+            self.om_session = None

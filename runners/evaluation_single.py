@@ -447,6 +447,13 @@ def inference_energy(score_path, save_path, energy_om_path=None, pointnet2_energ
 
     pickle.dump(all_pred_energy, open(save_path, 'wb'))
 
+    # Release OM resources for energy stage
+    if is_om_model:
+        energy_net.release()
+        pointnet2_encoder.release()
+        del energy_net, pointnet2_encoder
+        gc.collect()
+
 def aggregate_pose(score_path, energy_path, save_path):
     if os.path.exists(save_path):
         return
@@ -595,6 +602,12 @@ def inference_scale(score_path, aggregate_path, save_path, scale_path=None):
             gc.collect()
 
     pickle.dump((all_final_pose, all_final_length), open(save_path, 'wb'))
+
+    # Release OM resources for scale stage
+    if is_om_model and 'scale_net' in locals():
+        scale_net.release()
+        del scale_net
+        gc.collect()
 
 def get_detect_match(cls_path, save_path):
     if os.path.exists(save_path):
@@ -772,10 +785,15 @@ if __name__ == '__main__':
     print("="*60)
     score_net = inference_score_decoupled(score_save_path)
 
-    # Release score stage's PointNet2 OM to free NPU memory before energy stage
-    if hasattr(score_net, 'pointnet2_om') and score_net.pointnet2_om is not None:
-        del score_net.pointnet2_om
-        score_net.pointnet2_om = None
+    # Release all score stage OM resources before energy stage
+    if is_om_model:
+        score_net.release()
+        del score_net
+        # DINOv2 is only used in score stage, release it now
+        global _dino_model
+        if _dino_model is not None and hasattr(_dino_model, 'release'):
+            _dino_model.release()
+            _dino_model = None
         gc.collect()
 
     aggregate_save_path = f'results/evaluation_results/{cfg.result_dir}/aggregated.pkl'
@@ -802,3 +820,9 @@ if __name__ == '__main__':
 
     # Print performance statistics
     print_performance_stats()
+
+    # Release all OM resources before process exit to prevent NPU stream errors
+    if is_om_model:
+        from ais_bench.infer.interface import InferSession
+        InferSession.finalize()
+        print("AscendCL resources finalized successfully")
