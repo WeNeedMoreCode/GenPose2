@@ -376,44 +376,69 @@ class ODESamplerExternal:
         )
 
         # Extract results
-        xs = torch.tensor(res.y, device=self.device, dtype=torch.float32).T.view(-1, batch_size, pose_dim)
-        x = torch.tensor(res.y[:, -1], device=self.device, dtype=torch.float32).reshape(shape)
+        if self.score_network.is_om:
+            xs = res.y.T.astype(np.float32).reshape(-1, batch_size, pose_dim)
+            x = res.y[:, -1].astype(np.float32).reshape(shape)
+        else:
+            xs = torch.tensor(res.y, device=self.device, dtype=torch.float32).T.view(-1, batch_size, pose_dim)
+            x = torch.tensor(res.y[:, -1], device=self.device, dtype=torch.float32).reshape(shape)
 
         # Reverse diffusion predictor for denoising (same as original cond_ode_sampler:221)
 
-        vec_eps = eps if self.score_network.is_om else torch.ones((x.shape[0], 1), device=x.device) * eps
-        drift, diffusion = self.sde_coeff(vec_eps)
-        data['sampled_pose'] = x.float()
-        data['t'] = vec_eps
         if self.score_network.is_om:
-            grad_np = self.score_network(
+            from utils.misc import normalize_rotation_numpy as normalize_rotation_fn
+            pose_mode = self.score_network.cfg.pose_mode
+
+            drift, diffusion = self.sde_coeff(eps)
+            x_in = x.astype(np.float32)
+            grad = self.score_network(
                 data['pts_feat'], data['rgb_feat'],
-                x.cpu().numpy().astype(np.float32),
+                x_in,
                 np.full((x.shape[0], 1), eps, dtype=np.float32)
             )
-            grad = torch.from_numpy(grad_np).to(self.device)
+            drift = drift - diffusion**2 * grad
+            mean_x = x + drift * ((1 - eps) / 1000)
+            x = mean_x
+
+            # Normalize rotation
+            num_steps = xs.shape[0]
+            xs = xs.reshape(batch_size * num_steps, -1).copy()
+            xs[:, :-3] = normalize_rotation_fn(xs[:, :-3], pose_mode)
+            xs = xs.reshape(num_steps, batch_size, -1)
+            if pts_center is not None:
+                xs[:, :, -3:] += pts_center[np.newaxis, :, :]
+
+            x = x.copy()
+            x[:, :-3] = normalize_rotation_fn(x[:, :-3], pose_mode)
+            if pts_center is not None:
+                x[:, -3:] += pts_center
+
+            return xs.transpose(1, 0, 2), x
         else:
+            from utils.misc import normalize_rotation
+            pose_mode = self.score_network.cfg.pose_mode
+
+            vec_eps = torch.ones((x.shape[0], 1), device=x.device) * eps
+            drift, diffusion = self.sde_coeff(vec_eps)
+            data['sampled_pose'] = x.float()
+            data['t'] = vec_eps
             grad = self.score_network.get_score(data)
-        drift = drift - diffusion**2 * grad
-        mean_x = x + drift * ((1 - eps) / 1000)
-        x = mean_x
+            drift = drift - diffusion**2 * grad
+            mean_x = x + drift * ((1 - eps) / 1000)
+            x = mean_x
 
-        # Normalize rotation (same as original cond_ode_sampler:226-232)
-        from utils.misc import normalize_rotation
-        pose_mode = self.score_network.cfg.pose_mode
+            num_steps = xs.shape[0]
+            xs = xs.reshape(batch_size * num_steps, -1)
+            xs[:, :-3] = normalize_rotation(xs[:, :-3], pose_mode)
+            xs = xs.reshape(num_steps, batch_size, -1)
+            if pts_center is not None:
+                xs[:, :, -3:] += pts_center.unsqueeze(0).repeat(xs.shape[0], 1, 1)
 
-        num_steps = xs.shape[0]
-        xs = xs.reshape(batch_size * num_steps, -1)
-        xs[:, :-3] = normalize_rotation(xs[:, :-3], pose_mode)
-        xs = xs.reshape(num_steps, batch_size, -1)
-        if pts_center is not None:
-            xs[:, :, -3:] += pts_center.unsqueeze(0).repeat(xs.shape[0], 1, 1)
+            x[:, :-3] = normalize_rotation(x[:, :-3], pose_mode)
+            if pts_center is not None:
+                x[:, -3:] += pts_center
 
-        x[:, :-3] = normalize_rotation(x[:, :-3], pose_mode)
-        if pts_center is not None:
-            x[:, -3:] += pts_center
-
-        return xs.permute(1, 0, 2), x
+            return xs.permute(1, 0, 2), x
 
 
 def create_score_network(checkpoint_path, device='npu:0', pointnet2_om_path=None):
@@ -515,10 +540,8 @@ class PointNet2EncoderWrapper(nn.Module):
         """
         # Convert torch tensor to numpy
         # Convert torch tensor to numpy
-        input_data = pointcloud.cpu().numpy().astype(np.float32)
 
-        # Run OM inference
-        outputs = self.om_session.infer([input_data])
+        outputs = self.om_session.infer([pointcloud])
 
         return outputs[0]
 

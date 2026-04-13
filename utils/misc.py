@@ -302,6 +302,24 @@ def normalize_rotation(rotation, rotation_mode):
         raise NotImplementedError
     return rotation
 
+
+def normalize_rotation_numpy(rotation, rotation_mode):
+    """Numpy version of normalize_rotation for OM inference (rot_matrix mode only)."""
+    a1 = rotation[:, :3]
+    a2 = rotation[:, 3:]
+    b1 = a1 / np.linalg.norm(a1, axis=-1, keepdims=True)
+    b2 = a2 - np.sum(b1 * a2, axis=-1, keepdims=True) * b1
+    b2 = b2 / np.linalg.norm(b2, axis=-1, keepdims=True)
+    b3 = np.stack([
+        b1[..., 1] * b2[..., 2] - b1[..., 2] * b2[..., 1],
+        b1[..., 2] * b2[..., 0] - b1[..., 0] * b2[..., 2],
+        b1[..., 0] * b2[..., 1] - b1[..., 1] * b2[..., 0],
+    ], axis=-1)
+    rot_matrix = np.stack((b1, b2, b3), axis=-1)
+    rotation[:, :3] = rot_matrix[:, :, 0]
+    rotation[:, 3:6] = rot_matrix[:, :, 1]
+    return rotation
+
     
 if __name__ == '__main__':
     quat = torch.randn(2, 3, 4)

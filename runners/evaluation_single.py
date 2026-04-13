@@ -336,7 +336,10 @@ def inference_score_decoupled(save_path):
             )
 
         # Reshape result from [bs*repeat_num, pose_dim] to [bs, repeat_num, pose_dim]
-        pred_pose = sampled_pose.view(bs, cfg.eval_repeat_num, pose_dim)
+        if is_om_model:
+            pred_pose = sampled_pose.reshape(bs, cfg.eval_repeat_num, pose_dim)
+        else:
+            pred_pose = sampled_pose.view(bs, cfg.eval_repeat_num, pose_dim)
 
         # Save pred_pose and features
         all_pred_pose.append(pred_pose)
@@ -410,7 +413,7 @@ def inference_energy(score_path, save_path, energy_om_path=None, pointnet2_energ
             repeated_pts_feat = np.repeat(pts_feat[np.newaxis, ...], repeat_num, axis=1).reshape(bs * repeat_num, -1)
 
             # Prepare sampled_pose with pts_center subtracted
-            pose_samples = all_pred_pose[i].clone().view(bs * repeat_num, -1).cpu().numpy().astype(np.float32)
+            pose_samples = all_pred_pose[i].reshape(bs * repeat_num, -1).astype(np.float32)
             pts_center = batch_sample['pts_center']
             repeated_pts_center = np.repeat(pts_center[:, np.newaxis, :], repeat_num, axis=1).reshape(bs * repeat_num, -1)
             pose_samples[:, -3:] -= repeated_pts_center
@@ -454,6 +457,7 @@ def aggregate_pose(score_path, energy_path, save_path):
     all_pred_energy = pickle.load(open(energy_path, 'rb'))
         # ensure tensors (OM energy path saves numpy)
     if is_om_model:
+        all_pred_pose = [torch.from_numpy(i) for i in all_pred_pose]
         all_pred_energy = [torch.from_numpy(i) for i in all_pred_energy]
 
     all_aggregated_pose = []
@@ -785,7 +789,7 @@ if __name__ == '__main__':
     scale_model_name = '_'.join(cfg.pretrained_scale_model_path.split('/')[-2:])
 
     cls_save_path = f'results/evaluation_results/{cfg.result_dir}/scale_prediction_{scale_model_name}.pkl'
-    inference_scale(score_save_path, aggregate_save_path, cls_save_path, scale_om_path=cfg.pretrained_scale_model_path)
+    inference_scale(score_save_path, aggregate_save_path, cls_save_path, scale_path=cfg.pretrained_scale_model_path)
 
     dm_save_path = f'results/evaluation_results/{cfg.result_dir}/detect_match.pkl'
     get_detect_match(cls_save_path, dm_save_path)
