@@ -8,9 +8,7 @@ from tqdm import tqdm
 import _pickle as cPickle
 import pickle
 import torch
-import torch_npu
 import random
-torch_npu.npu.set_compile_mode(jit_compile=False)
 import torch.nn as nn
 import torch.nn.functional as F
 import copy
@@ -178,7 +176,6 @@ def inference_score(save_path):
     total_samples = 0
 
     for i, test_batch in enumerate(tqdm(dataloader, desc="score sampling")):
-        torch.npu.synchronize()
         start_time = time.time()
         batch_sample = process_batch(
             batch_sample = test_batch,
@@ -204,7 +201,6 @@ def inference_score(save_path):
             'pts_feat': batch_sample['pts_feat'].cpu(),
             'rgb_feat': (None if batch_sample['rgb_feat'] is None else batch_sample['rgb_feat'].cpu()),
         })
-        torch.npu.synchronize()
         elapsed = time.time() - start_time
         perf_stats['score_time'].append(elapsed)
         total_samples += pred_pose.shape[0]
@@ -243,7 +239,6 @@ def inference_score_decoupled(save_path):
         device=cfg.device,
         pointnet2_om_path=pointnet2_om_path  # Pass None for PyTorch, path for OM
     )
-
     if is_om_model:
         from networks.gf_algorithms.sde import ve_sde_numpy
         sde_coeff_fn = ve_sde_numpy
@@ -263,7 +258,6 @@ def inference_score_decoupled(save_path):
 
     print(f"\nRunning unified decoupled inference ({'OM' if score_net.is_om else 'PyTorch'})...")
     for i, test_batch in enumerate(tqdm(dataloader, desc="score sampling")):
-        torch.npu.synchronize()
         start_time = time.time()
 
         if is_om_model:
@@ -300,12 +294,13 @@ def inference_score_decoupled(save_path):
         pts_center = batch_sample.get('pts_center', None)
 
         # Generate random initial values for all repeats at once
-        init_x_all = prior_fn((bs, cfg.eval_repeat_num, pose_dim), T=cfg.T0).to(cfg.device)
+        init_x_all = prior_fn((bs, cfg.eval_repeat_num, pose_dim), T=cfg.T0)
 
         # Repeat features and init_x to process all at once
         if is_om_model:
             pts_feat_repeated = np.repeat(pts_feat[np.newaxis, ...], cfg.eval_repeat_num, axis=1).reshape(bs * cfg.eval_repeat_num, -1)
         else:
+            init_x_all = init_x_all.to(cfg.device)
             pts_feat_repeated = pts_feat.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
 
         # In pointwise mode, rgb_feat is already fused into pts_feat, so pass None
@@ -348,12 +343,11 @@ def inference_score_decoupled(save_path):
             'rgb_feat': rgb_feat,
         })
 
-        torch.npu.synchronize()
+        
         elapsed = time.time() - start_time
         perf_stats['score_time'].append(elapsed)
         total_samples += pred_pose.shape[0]
         perf_stats['score_samples'] = total_samples
-
         if i % 4 == 3:
             gc.collect()
 
@@ -385,9 +379,7 @@ def inference_energy(score_path, save_path, energy_om_path=None, pointnet2_energ
     total_samples = 0
 
     for i, test_batch in enumerate(tqdm(dataloader, desc="energy")):
-        torch.npu.synchronize()
         start_time = time.time()
-
         if is_om_model:
             batch_sample = process_batch_numpy(test_batch, pose_mode=cfg.pose_mode)
         else:
@@ -436,7 +428,6 @@ def inference_energy(score_path, save_path, energy_om_path=None, pointnet2_energ
             )
         all_pred_energy.append(pred_energy)
 
-        torch.npu.synchronize()
         elapsed = time.time() - start_time
         perf_stats['energy_time'].append(elapsed)
         total_samples += pred_energy.shape[0]
@@ -446,13 +437,6 @@ def inference_energy(score_path, save_path, energy_om_path=None, pointnet2_energ
             gc.collect()
 
     pickle.dump(all_pred_energy, open(save_path, 'wb'))
-
-    # Release OM resources for energy stage
-    if is_om_model:
-        energy_net.release()
-        pointnet2_encoder.release()
-        del energy_net, pointnet2_encoder
-        gc.collect()
 
 def aggregate_pose(score_path, energy_path, save_path):
     if os.path.exists(save_path):
@@ -471,7 +455,6 @@ def aggregate_pose(score_path, energy_path, save_path):
     total_samples = 0
 
     for i, (pred_pose, pred_energy) in enumerate(tqdm(zip(all_pred_pose, all_pred_energy), desc="aggregate")):
-        torch.npu.synchronize()
         start_time = time.time()
         sorted_pose, sorted_energy = sort_poses_by_energy(pred_pose, pred_energy)
         bs = pred_pose.shape[0]
@@ -498,7 +481,6 @@ def aggregate_pose(score_path, energy_path, save_path):
         aggregated_pose[:, :3, 3] = aggregated_trans
         all_aggregated_pose.append(aggregated_pose)
 
-        torch.npu.synchronize()
         elapsed = time.time() - start_time
         perf_stats['aggregate_time'].append(elapsed)
         total_samples += bs
@@ -522,7 +504,6 @@ def inference_scale(score_path, aggregate_path, save_path, scale_path=None):
         total_samples = 0
 
         for i, test_batch in enumerate(tqdm(dataloader, desc="bbox")):
-            torch.npu.synchronize()
             start_time = time.time()
             pcl: torch.Tensor = test_batch['pcl_in'] # [bs, 1024, 3]
             rotation: torch.Tensor = all_aggregated_pose[i][:, :3, :3] # [bs, 3, 3]
@@ -539,7 +520,6 @@ def inference_scale(score_path, aggregate_path, save_path, scale_path=None):
             bbox_length *= 2
             all_final_length.append(bbox_length.cpu())
 
-            torch.npu.synchronize()
             elapsed = time.time() - start_time
             perf_stats['bbox_time'].append(elapsed)
             total_samples += pcl.shape[0]
@@ -566,17 +546,17 @@ def inference_scale(score_path, aggregate_path, save_path, scale_path=None):
     total_samples = 0
 
     for i, test_batch in enumerate(tqdm(dataloader, desc="scale")):
-        torch.npu.synchronize()
         start_time = time.time()
 
         pts_feat = all_score_feature[i]['pts_feat']
-        axes = all_aggregated_pose[i][:, :3, :3].to(cfg.device)
+        axes = all_aggregated_pose[i][:, :3, :3]
 
         if is_om_model:
             with torch.no_grad():
                 length = scale_net(pts_feat, axes)
             cal_mat = axes  # pred_scale_func returns axes unchanged ("historical reasons")
         else:
+            axes = axes.to(cfg.device)
             batch_sample = process_batch(
                 batch_sample=test_batch,
                 device=cfg.device,
@@ -592,7 +572,6 @@ def inference_scale(score_path, aggregate_path, save_path, scale_path=None):
         all_final_pose.append(final_pose.cpu())
         all_final_length.append(length.cpu())
 
-        torch.npu.synchronize()
         elapsed = time.time() - start_time
         perf_stats['scale_time'].append(elapsed)
         total_samples += length.shape[0]
@@ -602,12 +581,6 @@ def inference_scale(score_path, aggregate_path, save_path, scale_path=None):
             gc.collect()
 
     pickle.dump((all_final_pose, all_final_length), open(save_path, 'wb'))
-
-    # Release OM resources for scale stage
-    if is_om_model and 'scale_net' in locals():
-        scale_net.release()
-        del scale_net
-        gc.collect()
 
 def get_detect_match(cls_path, save_path):
     if os.path.exists(save_path):
@@ -758,43 +731,12 @@ if __name__ == '__main__':
     score_model_name = '_'.join(cfg.pretrained_score_model_path.split('/')[-2:])
     score_save_path = f'results/evaluation_results/{cfg.result_dir}/score_prediction_{score_model_name}.pkl'
 
-    # Auto-detect model type
     is_om_model = cfg.pretrained_score_model_path.endswith('.om')
-
-    # For OM models, verify PointNet2 OM exists
-    if is_om_model:
-        pointnet2_om_path = getattr(cfg, 'pretrained_pointnet2_score_model_path', None)
-        if not os.path.exists(pointnet2_om_path):
-            raise FileNotFoundError(
-                f"PointNet2 OM not found: {pointnet2_om_path}\n"
-                f"Please export PointNet2 to OM first:\n"
-                f"  python runners/export_onnx.py --agent_type pointnet2_from_score\n"
-                f"  python runners/onnx2om.py --onnx_path ./onnx_models/pointnet2_from_score.onnx"
-            )
-
-    # Unified decoupled inference (works for both PyTorch and OM)
-    print("="*60)
-    if is_om_model:
-        print("Using UNIFIED DECOUPLED OM inference")
-        print(f"ScoreNet OM: {cfg.pretrained_score_model_path}")
-        print(f"PointNet2 OM: {pointnet2_om_path}")
-    else:
-        print("Using UNIFIED DECOUPLED PyTorch inference")
-        print(f"Model: {cfg.pretrained_score_model_path}")
-    print("This enables direct PyTorch vs OM comparison for debugging")
-    print("="*60)
+    if not is_om_model:
+        import torch_npu
+        torch_npu.npu.set_compile_mode(jit_compile=False)
     score_net = inference_score_decoupled(score_save_path)
 
-    # Release all score stage OM resources before energy stage
-    if is_om_model:
-        score_net.release()
-        del score_net
-        # DINOv2 is only used in score stage, release it now
-        global _dino_model
-        if _dino_model is not None and hasattr(_dino_model, 'release'):
-            _dino_model.release()
-            _dino_model = None
-        gc.collect()
 
     aggregate_save_path = f'results/evaluation_results/{cfg.result_dir}/aggregated.pkl'
     energy_om_path = getattr(cfg, 'pretrained_energy_om_path', None) or getattr(cfg, 'pretrained_energy_model_path', None)
@@ -820,9 +762,3 @@ if __name__ == '__main__':
 
     # Print performance statistics
     print_performance_stats()
-
-    # Release all OM resources before process exit to prevent NPU stream errors
-    if is_om_model:
-        from ais_bench.infer.interface import InferSession
-        InferSession.finalize()
-        print("AscendCL resources finalized successfully")
