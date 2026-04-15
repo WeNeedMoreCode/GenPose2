@@ -21,7 +21,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 def convert_onnx_to_om(
     onnx_path="./onnx_models/score_network.onnx",
-    output_path=None,
+    output_dir=None,
     batch_size=1,
     soc_version="Ascend310P3"
 ):
@@ -30,50 +30,39 @@ def convert_onnx_to_om(
 
     Args:
         onnx_path: Path to input ONNX model
-        output_path: Path to output OM model (auto-detected if not specified)
+        output_dir: Directory for output OM model (auto-detected if not specified)
         batch_size: Batch size for ATC conversion (default: 1)
-        soc_version: SoC version (default: Ascend310P)
+        soc_version: SoC version (default: Ascend310P3)
     """
     onnx_path = Path(onnx_path)
-    if output_path is None:
+    if output_dir is None:
         output_path = onnx_path.with_suffix('')
     else:
-        output_path = Path(output_path)
+        output_dir = Path(output_dir)
+        output_path = output_dir / onnx_path.stem
 
     # Detect model type from filename
-    if 'pointnet2_scorenet' in onnx_path.stem:
-        model_type = 'pointnet2_scorenet'
-    elif onnx_path.stem == 'pointnet2_from_score':
-        model_type = 'pointnet2_from_score'
-    elif onnx_path.stem == 'pointnet2_from_energy':
-        model_type = 'pointnet2_from_energy'
-    elif onnx_path.stem == 'pointnet2':
-        model_type = 'pointnet2'
-    elif onnx_path.stem == 'scorenet':
-        model_type = 'score'
-    elif 'energy' in onnx_path.stem:
-        model_type = 'energy'
-    elif 'scale' in onnx_path.stem:
-        model_type = 'scale'
-    elif 'dinov2' in onnx_path.stem:
-        model_type = 'dinov2'
-    else:
-        model_type = 'unknown'
+    STEM_TO_TYPE = {
+        'pointnet2_from_score': 'pointnet2',
+        'pointnet2_from_energy': 'pointnet2',
+        'scorenet': 'score',
+        'energynet': 'energy',
+        'scalenet': 'scale',
+        'dinov2_vits14': 'dinov2',
+    }
+    model_type = STEM_TO_TYPE.get(onnx_path.stem)
 
     # Model-type default batch sizes
-    default_batch_sizes = {
+    DEFAULT_BATCH_SIZES = {
         'pointnet2': 16,
-        'pointnet2_from_score': 16,
-        'pointnet2_from_energy': 16,
         'score': 800,
-        'pointnet2_scorenet': 16,
         'energy': 800,
         'scale': 16,
         'dinov2': 16,
     }
 
     if batch_size is None:
-        batch_size = default_batch_sizes.get(model_type, 1)
+        batch_size = DEFAULT_BATCH_SIZES.get(model_type, 1)
         print(f"Using default batch_size for {model_type}: {batch_size}")
 
     print("=" * 60)
@@ -93,16 +82,7 @@ def convert_onnx_to_om(
         print(f"Error: ONNX model not found: {onnx_path}")
         print()
         print("Please run export first:")
-        if model_type == 'score':
-            print("  python runners/export_onnx.py --agent_type score --output_dir ./onnx_models")
-        elif model_type == 'pointnet2':
-            print("  python runners/export_onnx.py --agent_type pointnet2 --output_dir ./onnx_models")
-        elif model_type == 'energy':
-            print("  python runners/export_onnx.py --agent_type energy --output_dir ./onnx_models")
-        elif model_type == 'scale':
-            print("  python runners/export_onnx.py --agent_type scale --output_dir ./onnx_models")
-        else:
-            print("  python runners/export_onnx.py --agent_type [score|pointnet2|energy|scale] --output_dir ./onnx_models")
+        print("  python runners/export_onnx.py --agent_type [score|energy|scale|pointnet2_from_score|pointnet2_from_energy|dinov2] --output_dir ./onnx_models")
         return False
 
     # Check if ATC tool is available
@@ -120,38 +100,12 @@ def convert_onnx_to_om(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Prepare ATC command
-    # Input shapes:
-    #   pointnet2_scorenet:
-    #     pts:          [batch_size, 1024, 3] - raw point cloud
-    #     rgb_feat:     [batch_size, 1024, 384] - DINOv2 features
-    #     sampled_pose: [batch_size, 9]
-    #     t:            [batch_size, 1]
-    #   score_network (pointwise mode - rgb_feat already fused in pts_feat):
-    #     pts_feat:     [batch_size, 1024] - contains RGB info
-    #     sampled_pose: [batch_size, 9]
-    #     t:            [batch_size, 1]
-    #   energy_network:
-    #     pts_feat:     [batch_size, 1024] - contains RGB info
-    #     sampled_pose: [batch_size, 9]
-    #     t:            [batch_size, 1]
-    #   scalenet:
-    #     pts_feat:     [batch_size, 1024] - contains RGB info
-    #     axes:         [batch_size, 3, 3] - rotation matrices
-
     # Set input shapes based on model type
-    if model_type == 'pointnet2_scorenet':
-        input_shapes = {
-            'pts': f"{batch_size},1024,3",
-            'rgb_feat': f"{batch_size},1024,384",
-            'sampled_pose': f"{batch_size},9",
-            't': f"{batch_size},1"
-        }
-    elif model_type in ['pointnet2', 'pointnet2_from_score', 'pointnet2_from_energy']:
+    if model_type == 'pointnet2':
         input_shapes = {
             'pointcloud': f"{batch_size},1024,387"
         }
     elif model_type in ['score', 'energy']:
-        # Pointwise mode: rgb_feat is not used
         input_shapes = {
             'pts_feat': f"{batch_size},1024",
             'sampled_pose': f"{batch_size},9",
@@ -233,9 +187,9 @@ def main():
                         default='./onnx_models/scorenet.onnx',
                         help='Path to input ONNX model (scorenet.onnx, pointnet2_from_score.onnx, etc.)')
     parser.add_argument('--output', type=str,
-                        dest='output_path',
-                        default=None,
-                        help='Path to output OM model (auto-detected from onnx_path if not specified)')
+                        dest='output_dir',
+                        default='om_models',
+                        help='Directory for output OM model (default: om_models)')
     parser.add_argument('--batch_size', type=int, default=None,
                         help='Batch size for ATC conversion (default: model-type specific)')
     parser.add_argument('--soc_version', type=str, default='Ascend310P3',
@@ -245,7 +199,7 @@ def main():
 
     success = convert_onnx_to_om(
         onnx_path=args.onnx_path,
-        output_path=args.output_path,
+        output_dir=args.output_dir,
         batch_size=args.batch_size,
         soc_version=args.soc_version
     )

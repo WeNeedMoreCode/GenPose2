@@ -20,8 +20,8 @@ from pathlib import Path
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from configs.config import get_config
-from networks.om_wrappers import create_score_network
-from networks.posenet_agent import PoseNet
+
+
 
 # ONNX 导出时绕过 autograd Function 包装，直接调用底层函数
 # autograd.Function.apply 在 ONNX trace 模式下会导致精度错误（如 FPS 输出全零）
@@ -34,7 +34,7 @@ pointnet2_utils.grouping_operation = lambda points, idx: pointnet2_ops._group_po
 pointnet2_utils.ball_query = lambda radius, nsample, xyz, new_xyz: pointnet2_ops._ball_query(new_xyz, xyz, radius, nsample)
 
 
-def resolve_checkpoint(cfg_attr, fallback_path, explicit_path=None):
+def resolve_checkpoint(cfg, cfg_attr, fallback_path, explicit_path=None):
     """Resolve checkpoint path: use explicit path, config attr, or fallback.
     Returns None if checkpoint not found."""
     if explicit_path is None:
@@ -96,6 +96,7 @@ def export_pointnet2_to_onnx(checkpoint_path, output_dir, cfg, device='cpu', om_
         device: Device to load model on
         om_batch_size: Fixed batch size for OM model (default: 16).
     """
+    from networks.posenet_agent import PoseNet
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     log_export("PointNet2 Encoder", om_batch_size, checkpoint_path, device)
@@ -203,7 +204,7 @@ def get_energy_network_input_info(batch_size=800):
     }
 
 
-def get_scale_network_input_info(batch_size=1):
+def get_scale_network_input_info(batch_size=16):
     return {
         'inputs': [
             {'name': 'pts_feat', 'shape': [batch_size, 1024], 'dtype': 'float32'},
@@ -239,6 +240,7 @@ def export_score_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu',
         device: Device to load model on
         om_batch_size: Fixed batch size for OM model (default: 800).
     """
+    from networks.om_wrappers import create_score_network
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     log_export("Score Network", om_batch_size, checkpoint_path, device)
@@ -317,6 +319,7 @@ def export_energy_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu'
         device: Device to load model on
         om_batch_size: Fixed batch size for OM model (default: 800).
     """
+    from networks.posenet_agent import PoseNet
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     log_export("Energy Network", om_batch_size, checkpoint_path, device)
@@ -374,7 +377,7 @@ def export_energy_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu'
     return onnx_path
 
 
-def export_scale_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu', om_batch_size=1):
+def export_scale_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu', om_batch_size=16):
     """
     Export Scale Network to ONNX format.
 
@@ -385,6 +388,7 @@ def export_scale_network_to_onnx(checkpoint_path, output_dir, cfg, device='cpu',
         device: Device to load model on
         om_batch_size: Fixed batch size for OM model (default: 1).
     """
+    from networks.posenet_agent import PoseNet
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     log_export("Scale Network", om_batch_size, checkpoint_path, device)
@@ -588,6 +592,18 @@ def main():
 
     args = parser.parse_args()
 
+    # Default OM batch_size per agent_type
+    DEFAULT_OM_BATCH_SIZE = {
+        'score': 800,
+        'energy': 800,
+        'scale': 16,
+        'pointnet2_from_score': 16,
+        'pointnet2_from_energy': 16,
+        'dinov2': 16,
+    }
+    if args.om_batch_size is None:
+        args.om_batch_size = DEFAULT_OM_BATCH_SIZE[args.agent_type]
+
     # Setup config
     sys.argv = [
         'export_onnx.py',
@@ -600,39 +616,37 @@ def main():
     # Determine checkpoint path and export function based on agent_type
     output_file = None
     if args.agent_type == 'score':
-        checkpoint_path = resolve_checkpoint('pretrained_score_model_path',
+        checkpoint_path = resolve_checkpoint(cfg, 'pretrained_score_model_path',
                                              './results/ckpts/ScoreNet/scorenet.pth', args.checkpoint_path)
         if checkpoint_path is None:
             return
         output_file = export_score_network_to_onnx(checkpoint_path, args.output_dir, cfg, args.device, args.om_batch_size)
 
     elif args.agent_type == 'pointnet2_from_score':
-        checkpoint_path = resolve_checkpoint('pretrained_score_model_path',
+        checkpoint_path = resolve_checkpoint(cfg, 'pretrained_score_model_path',
                                              './results/ckpts/ScoreNet/scorenet.pth', args.checkpoint_path)
         if checkpoint_path is None:
             return
-        args.om_batch_size = getattr(args, "om_batch_size", 16)
         output_file = export_pointnet2_to_onnx(checkpoint_path, args.output_dir, cfg, args.device, args.om_batch_size,
                                                output_name='pointnet2_from_score.onnx')
 
     elif args.agent_type == 'pointnet2_from_energy':
-        checkpoint_path = resolve_checkpoint('pretrained_energy_model_path',
+        checkpoint_path = resolve_checkpoint(cfg, 'pretrained_energy_model_path',
                                              './results/ckpts/EnergyNet/energynet.pth', args.checkpoint_path)
         if checkpoint_path is None:
             return
-        args.om_batch_size = getattr(args, "om_batch_size", 16)
         output_file = export_pointnet2_to_onnx(checkpoint_path, args.output_dir, cfg, args.device, args.om_batch_size,
                                                output_name='pointnet2_from_energy.onnx')
 
     elif args.agent_type == 'energy':
-        checkpoint_path = resolve_checkpoint('pretrained_energy_model_path',
+        checkpoint_path = resolve_checkpoint(cfg, 'pretrained_energy_model_path',
                                              './results/ckpts/EnergyNet/energynet.pth', args.checkpoint_path)
         if checkpoint_path is None:
             return
         output_file = export_energy_network_to_onnx(checkpoint_path, args.output_dir, cfg, args.device, args.om_batch_size)
 
     elif args.agent_type == 'scale':
-        checkpoint_path = resolve_checkpoint('pretrained_scale_model_path',
+        checkpoint_path = resolve_checkpoint(cfg, 'pretrained_scale_model_path',
                                              './results/ckpts/ScaleNet/scalenet.pth', args.checkpoint_path)
         if checkpoint_path is None:
             return
@@ -640,7 +654,7 @@ def main():
 
     elif args.agent_type == 'dinov2':
         img_size = getattr(cfg, 'img_size', 224)
-        output_file = export_dinov2_to_onnx(args.output_dir, args.device, img_size=img_size)
+        output_file = export_dinov2_to_onnx(args.output_dir, args.device, img_size=img_size, om_batch_size=args.om_batch_size)
 
     if output_file:
         print(f"\nExport completed: {output_file}")
