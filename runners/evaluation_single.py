@@ -736,7 +736,10 @@ if __name__ == '__main__':
         import torch_npu
         torch_npu.npu.set_compile_mode(jit_compile=False)
     score_net = inference_score_decoupled(score_save_path)
-
+    if is_om_model:
+        score_net.release()
+        del score_net
+        gc.collect()
 
     aggregate_save_path = f'results/evaluation_results/{cfg.result_dir}/aggregated.pkl'
     energy_om_path = getattr(cfg, 'pretrained_energy_om_path', None) or getattr(cfg, 'pretrained_energy_model_path', None)

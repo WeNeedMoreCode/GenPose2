@@ -134,6 +134,14 @@ class ScoreNetworkWrapper(nn.Module):
         cfg.dino = 'pointwise'
         self.cfg = cfg
 
+    def release(self):
+        if not self.is_om:
+            raise NotImplementedError('Only om model needs= release resources.')
+        self.score_net_om.free_resource()
+        self.pointnet2_om.om_session.free_resource()
+        self.score_net_om = None
+        self.pointnet2_om.om_session = None
+
     def forward(self, pts_feat, rgb_feat, sampled_pose, t):
         """
         Forward pass of Score Network.
