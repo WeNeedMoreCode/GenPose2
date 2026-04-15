@@ -2,12 +2,12 @@
 # OM Model Evaluation Script
 # Uses separate PointNet2 OM and ScoreNet OM models for better performance
 CUDA_VISIBLE_DEVICES=0 python runners/evaluation_single.py \
---pretrained_dino_model_path onnx_models/dinov2_vits14.om \
---pretrained_pointnet2_score_model_path onnx_models/pointnet2_from_score.om \
---pretrained_pointnet2_energy_model_path onnx_models/pointnet2_from_energy.om \
---pretrained_score_model_path onnx_models/scorenet.om \
---pretrained_energy_model_path onnx_models/energy_network.om \
---pretrained_scale_model_path onnx_models/scalenet.om \
+--pretrained_dino_model_path om_models/dinov2_vits14.om \
+--pretrained_pointnet2_score_model_path om_models/pointnet2_from_score.om \
+--pretrained_pointnet2_energy_model_path om_models/pointnet2_from_energy.om \
+--pretrained_score_model_path om_models/scorenet.om \
+--pretrained_energy_model_path om_models/energynet.om \
+--pretrained_scale_model_path om_models/scalenet.om \
 --data_path omin6dpose-000a/ROPE/ \
 --sampler_mode ode \
 --percentage_data_for_test 1.0 \
