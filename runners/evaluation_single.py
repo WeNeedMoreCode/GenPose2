@@ -23,7 +23,7 @@ from ipdb import set_trace
 
 from networks.posenet_agent import PoseNet
 from networks.reward import sort_poses_by_energy, ranking_loss
-from networks.om_wrappers import create_score_network, create_ode_sampler
+from om_wrappers import create_score_network, create_ode_sampler
 from networks.gf_algorithms.sde import init_sde
 from datasets.datasets_omni6dpose import Omni6DPoseDataSet, array_to_SymLabel, array_to_CameraIntrinsicsBase, process_batch, process_batch_numpy
 from utils.metrics import get_rot_matrix
@@ -103,7 +103,7 @@ def get_dino_model():
         dino_om_path = getattr(cfg, 'pretrained_dino_model_path', None)
         if dino_om_path is not None and dino_om_path.endswith('.om'):
             print(f"Loading DINOv2 OM model: {dino_om_path}")
-            from networks.om_wrappers import DINOv2Wrapper
+            from om_wrappers import DINOv2Wrapper
             _dino_model = DINOv2Wrapper(dino_om_path, device=cfg.device)
             print("DINOv2 OM loaded successfully")
         else:
@@ -363,7 +363,7 @@ def inference_energy(score_path, save_path, energy_om_path=None, pointnet2_energ
     all_pred_pose, all_score_feature = pickle.load(open(score_path, 'rb'))
 
     if is_om_model:
-        from networks.om_wrappers import EnergyNetWrapper, PointNet2EncoderWrapper
+        from om_wrappers import EnergyNetWrapper, PointNet2EncoderWrapper
         energy_net = EnergyNetWrapper(energy_om_path, device=cfg.device)
         # Load PointNet2 from energy checkpoint for pts_feat extraction
         pointnet2_encoder = PointNet2EncoderWrapper(pointnet2_energy_om_path, device=cfg.device)
@@ -532,7 +532,7 @@ def inference_scale(score_path, aggregate_path, save_path, scale_path=None):
         return
 
     if is_om_model:
-        from networks.om_wrappers import ScaleNetWrapper
+        from om_wrappers import ScaleNetWrapper
         scale_net = ScaleNetWrapper(scale_path, device=cfg.device)
         print(f"Using ScaleNet OM: {scale_path}")
     else:
