@@ -41,14 +41,12 @@ class GatherOperation(Function):
         :return:
             output: (B, C, npoint)
         """
-        # ONNX-compatible: 直接调用底层函数，避免 wrapper 的 .copy_() 操作
         ctx.for_backwards = (idx, features.shape[1], features.shape[2])
         return pointnet2._gather_points(features, idx)
 
     @staticmethod
     def backward(ctx, grad_out):
         idx, C, N = ctx.for_backwards
-        # ONNX-compatible: 直接调用底层函数，避免 wrapper 的 .copy_() 操作
         grad_features = pointnet2._gather_points_grad(grad_out, idx, N)
         return grad_features, None
 
