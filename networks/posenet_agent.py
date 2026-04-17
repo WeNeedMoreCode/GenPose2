@@ -161,7 +161,6 @@ class PoseNet(nn.Module):
                 load_path = os.path.join(model_dir, "{}.pth".format(name))
         else:
             load_path = model_dir
-
         if not os.path.exists(load_path):
             raise ValueError("Checkpoint {} not exists.".format(load_path))
 
@@ -537,7 +536,6 @@ class PoseNet(nn.Module):
         """ get pts feature """
         bs = pose_samples.shape[0]
         repeat_num = pose_samples.shape[1]
-
         if mode == 'train':
             pts_feat = data['pts_feat'] if extract_feature == False else self.net(data, mode='pts_feature')
             rgb_feat = data['rgb_feat'] if extract_feature == False else self.net(data, mode='rgb_feature')

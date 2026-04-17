@@ -8,7 +8,7 @@ CUDA_VISIBLE_DEVICES=0 python runners/evaluation_single.py \
 --pretrained_score_model_path om_models/scorenet.om \
 --pretrained_energy_model_path om_models/energynet.om \
 --pretrained_scale_model_path om_models/scalenet.om \
---data_path omin6dpose-000a/ROPE/ \
+--data_path omni6dpose-000000/ROPE/ \
 --sampler_mode ode \
 --percentage_data_for_test 1.0 \
 --batch_size 16 \
