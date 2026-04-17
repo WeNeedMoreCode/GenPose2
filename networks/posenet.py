@@ -17,7 +17,6 @@ from configs.config import get_config
 from utils.genpose_utils import encode_axes
 
 
-# pts_encoder走这里
 class GFObjectPose(nn.Module):
     dino_name = 'dinov2_vits14'
     dino_dim = 384
@@ -70,7 +69,7 @@ class GFObjectPose(nn.Module):
                 norm_energy=self.cfg.norm_energy)
         ''' ToDo: ranking network '''
 
-    def extract_pts_feature(self, data, precomputed_rgb_feat=None):
+    def extract_pts_feature(self, data):
         """extract the input pointcloud feature
 
         Args:
@@ -83,7 +82,8 @@ class GFObjectPose(nn.Module):
         pts = data['pts']
         if self.cfg.dino == 'pointwise':
             # Use precomputed features if provided, otherwise compute with DINOv2
-            if precomputed_rgb_feat is not None:
+            precomputed_rgb_feat = getattr(data,'rgb_feat', None)
+            if precomputed_rgb_feat:
                 rgb_feat = precomputed_rgb_feat
                 rgb_feat = rgb_feat.to(pts.device)
             else:
@@ -192,9 +192,7 @@ class GFObjectPose(nn.Module):
             likelihoods = self.calc_likelihood(data)
             return likelihoods
         elif mode == 'pts_feature':
-            # Extract precomputed features if present, then remove from data
-            precomputed_rgb_feat = data.pop('precomputed_rgb_feat', None)
-            pts_feature = self.extract_pts_feature(data, precomputed_rgb_feat=precomputed_rgb_feat)
+            pts_feature = self.extract_pts_feature(data)
             return pts_feature
         elif mode == 'rgb_feature':
             if self.cfg.dino != 'global':

@@ -20,7 +20,6 @@ class FurthestPointSampling(Function):
         :return:
              output: (B, npoint) tensor containing the set
         """
-        # ONNX-compatible: 直接调用底层函数，避免 wrapper 的 .copy_() 操作
         return pointnet2._furthest_point_sampling(xyz, npoint)
 
     @staticmethod
@@ -150,7 +149,6 @@ class GroupingOperation(Function):
         :return:
             output: (B, C, npoint, nsample) tensor
         """
-        # ONNX-compatible: 直接调用底层函数，避免 wrapper 的 .copy_() 操作
         ctx.for_backwards = (idx, features.shape[2])
         return pointnet2._group_points(features, idx)
 
@@ -163,7 +161,6 @@ class GroupingOperation(Function):
             grad_features: (B, C, N) gradient of the features
         """
         idx, N = ctx.for_backwards
-        # ONNX-compatible: 直接调用底层函数，避免 wrapper 的 .copy_() 操作
         grad_features = pointnet2._group_points_grad(grad_out, idx, N)
         return grad_features, None
 
@@ -184,7 +181,6 @@ class BallQuery(Function):
         :return:
             idx: (B, npoint, nsample) tensor with the indicies of the features that form the query balls
         """
-        # ONNX-compatible: 直接调用底层函数，避免 wrapper 的 .copy_() 操作
         return pointnet2._ball_query(new_xyz, xyz, radius, nsample)
 
     @staticmethod
@@ -213,7 +209,6 @@ class QueryAndGroup(nn.Module):
         :return:
             new_features: (B, 3 + C, npoint, nsample)
         """
-        # 现在可以直接使用 ball_query 和 grouping_operation（已经是 ONNX 兼容的）
         idx = ball_query(self.radius, self.nsample, xyz, new_xyz)
         xyz_trans = xyz.transpose(1, 2).contiguous()
         grouped_xyz = grouping_operation(xyz_trans, idx)  # (B, 3, npoint, nsample)

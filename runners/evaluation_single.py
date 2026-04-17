@@ -84,20 +84,10 @@ def get_dataloader():
     return dataloader
 
 
-
-
-# ============================================================================
-# DINOv2 Feature Extraction (Preprocessing)
-# ============================================================================
-
 _dino_model = None
 
 def get_dino_model():
-    """Lazy load DINOv2 model to save memory.
-
-    NOTE: We intentionally do NOT call eval() to match the behavior in GFObjectPose.
-    This ensures consistent feature extraction behavior.
-    """
+    """Lazy load DINOv2 model to save memory."""
     global _dino_model
     if _dino_model is None and cfg.dino != 'none':
         dino_om_path = getattr(cfg, 'pretrained_dino_model_path', None)
@@ -110,36 +100,20 @@ def get_dino_model():
             print("Loading DINOv2 model for preprocessing...")
             import torch.hub
             _dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14').to(cfg.device)
-            # Intentionally NOT calling eval() to match GFObjectPose behavior (posenet.py:44-45)
-            # _dino_model.eval()  # <-- DO NOT enable this
             _dino_model.requires_grad_(False)
             print("DINOv2 loaded successfully")
     return _dino_model
 
 
 def extract_dino_features(batch_sample):
-    """
-    Extract DINOv2 features as a preprocessing step.
-
-    Args:
-        batch_sample: Dict with 'roi_rgb', 'roi_xs', 'roi_ys'
-
-    Returns:
-        rgb_feat: [B, 1024, 384] or None if dino='none'
-    """
-    if cfg.dino == 'none':
-        return None
-
+    """Extract DINOv2 features as a preprocessing step."""
     dino = get_dino_model()
-    if dino is None:
-        return None
-
     roi_rgb = batch_sample['roi_rgb']  # [B, 3, H, W]
     roi_xs = batch_sample['roi_xs']    # [B, 1024]
     roi_ys = batch_sample['roi_ys']    # [B, 1024]
 
     # OM path: DINOv2Wrapper returns numpy, keep as numpy throughout
-    if getattr(dino, 'is_om', False):
+    if is_om_model:
         return dino(roi_rgb, roi_xs, roi_ys)
 
     # PyTorch path: original get_intermediate_layers + gather
@@ -155,12 +129,6 @@ def extract_dino_features(batch_sample):
 
     return rgb_feat
 
-
-
-
-# ============================================================================
-# Inference Functions
-# ============================================================================
 
 def inference_score(save_path):
     if os.path.exists(save_path):
@@ -228,7 +196,7 @@ def inference_score_decoupled(save_path):
         return
 
     # Initialize SDE components
-    prior_fn, marginal_prob_fn, sde_fn, sampling_eps, T = init_sde('ve')
+    prior_fn, _, sde_fn, sampling_eps, _ = init_sde('ve')
 
     pointnet2_om_path = getattr(cfg, 'pretrained_pointnet2_score_model_path', None)
 
@@ -275,18 +243,10 @@ def inference_score_decoupled(save_path):
             batch_sample['precomputed_rgb_feat'] = rgb_feat
 
         # Extract point cloud features using unified interface
-        # Automatically uses OM PointNet2 (if available) or PyTorch PointNet2
-        if is_om_model:
-            pts_feat = score_net.extract_pts_feat(
-                pts=batch_sample['pts'],
-                rgb_feat=rgb_feat
-            )
-        else:
-            with torch.no_grad():
-                pts_feat = score_net.extract_pts_feat(
-                    pts=batch_sample['pts'],
-                    rgb_feat=rgb_feat
-                )
+        pts_feat = score_net.extract_pts_feat(
+            pts=batch_sample['pts'],
+            rgb_feat=rgb_feat
+        )
 
         # Get batch info
         bs = batch_sample['pts'].shape[0]
@@ -303,9 +263,6 @@ def inference_score_decoupled(save_path):
             init_x_all = init_x_all.to(cfg.device)
             pts_feat_repeated = pts_feat.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
 
-        # In pointwise mode, rgb_feat is already fused into pts_feat, so pass None
-        rgb_feat_repeated = None
-
         init_x_repeated = init_x_all.view(bs * cfg.eval_repeat_num, pose_dim)
         if is_om_model:
             pts_center_repeated = None if pts_center is None else \
@@ -318,7 +275,7 @@ def inference_score_decoupled(save_path):
         with torch.no_grad():
             _, sampled_pose = sampler.sample(
                 pts_feat=pts_feat_repeated,
-                rgb_feat=rgb_feat_repeated,
+                rgb_feat=None,
                 batch_size=bs * cfg.eval_repeat_num,
                 pose_dim=pose_dim,
                 T=cfg.T0,
@@ -356,19 +313,19 @@ def inference_score_decoupled(save_path):
     return score_net
 
 
-def inference_energy(score_path, save_path, energy_om_path=None, pointnet2_energy_om_path=None):
+def inference_energy(score_path, save_path):
     if os.path.exists(save_path):
         return
     assert os.path.exists(score_path)
-    all_pred_pose, all_score_feature = pickle.load(open(score_path, 'rb'))
+    all_pred_pose, _ = pickle.load(open(score_path, 'rb'))
 
     if is_om_model:
         from om_wrappers import EnergyNetWrapper, PointNet2EncoderWrapper
-        energy_net = EnergyNetWrapper(energy_om_path, device=cfg.device)
+        energy_net = EnergyNetWrapper(cfg.pretrained_energy_model_path, device=cfg.device)
         # Load PointNet2 from energy checkpoint for pts_feat extraction
-        pointnet2_encoder = PointNet2EncoderWrapper(pointnet2_energy_om_path, device=cfg.device)
-        print(f"Using EnergyNet OM: {energy_om_path}")
-        print(f"Using PointNet2 (from energy): {pointnet2_energy_om_path}")
+        pointnet2_encoder = PointNet2EncoderWrapper(cfg.pretrained_pointnet2_energy_model_path, device=cfg.device)
+        print(f"Using EnergyNet OM: {cfg.pretrained_energy_model_path}")
+        print(f"Using PointNet2 (from energy): {cfg.pretrained_pointnet2_energy_model_path}")
     else:
         cfg.agent_type = 'energy'
         energy_agent = PoseNet(cfg)
@@ -391,8 +348,7 @@ def inference_energy(score_path, save_path, energy_om_path=None, pointnet2_energ
 
         # Extract DINOv2 features as preprocessing (outside the model)
         rgb_feat = extract_dino_features(batch_sample)
-        if rgb_feat is not None:
-            batch_sample['precomputed_rgb_feat'] = rgb_feat
+        batch_sample['precomputed_rgb_feat'] = rgb_feat
 
         if is_om_model:
             bs = batch_sample['pts'].shape[0]
@@ -410,14 +366,11 @@ def inference_energy(score_path, save_path, energy_om_path=None, pointnet2_energ
             repeated_pts_center = np.repeat(pts_center[:, np.newaxis, :], repeat_num, axis=1).reshape(bs * repeat_num, -1)
             pose_samples[:, -3:] -= repeated_pts_center
 
-            # Prepare t
             T = 1e-5
             t = np.full((bs * repeat_num, 1), T, dtype=np.float32)
 
             # OM inference
-            with torch.no_grad():
-                pred_energy = energy_net(repeated_pts_feat, pose_samples, t)
-            pred_energy = pred_energy.reshape(bs, repeat_num, -1)
+            pred_energy = energy_net(repeated_pts_feat, pose_samples, t).reshape(bs, repeat_num, -1)
         else:
             pred_energy = energy_agent.get_energy(
                 data=batch_sample,
@@ -446,7 +399,7 @@ def aggregate_pose(score_path, energy_path, save_path):
 
     assert os.path.exists(energy_path)
     all_pred_energy = pickle.load(open(energy_path, 'rb'))
-        # ensure tensors (OM energy path saves numpy)
+    # ensure tensors (OM energy path saves numpy)
     if is_om_model:
         all_pred_pose = [torch.from_numpy(i) for i in all_pred_pose]
         all_pred_energy = [torch.from_numpy(i) for i in all_pred_energy]
@@ -456,7 +409,7 @@ def aggregate_pose(score_path, energy_path, save_path):
 
     for i, (pred_pose, pred_energy) in enumerate(tqdm(zip(all_pred_pose, all_pred_energy), desc="aggregate")):
         start_time = time.time()
-        sorted_pose, sorted_energy = sort_poses_by_energy(pred_pose, pred_energy)
+        sorted_pose, _ = sort_poses_by_energy(pred_pose, pred_energy)
         bs = pred_pose.shape[0]
         retain_num = int(cfg.eval_repeat_num * cfg.retain_ratio)
         good_pose = sorted_pose[:, :retain_num, :]
@@ -491,9 +444,11 @@ def aggregate_pose(score_path, energy_path, save_path):
     
     pickle.dump(all_aggregated_pose, open(save_path, 'wb'))
 
-def inference_scale(score_path, aggregate_path, save_path, scale_path=None):
+def inference_scale(score_path, aggregate_path, save_path):
     if os.path.exists(save_path):
         return
+    scale_path = getattr(cfg, 'pretrained_scale_model_path', None)
+    assert os.path.exists(scale_path)
     assert os.path.exists(score_path)
     _, all_score_feature = pickle.load(open(score_path, 'rb'))
     assert os.path.exists(aggregate_path)
@@ -747,12 +702,12 @@ if __name__ == '__main__':
     energy_model_name = '_'.join(energy_om_path.split('/')[-2:])
     energy_save_path = f'results/evaluation_results/{cfg.result_dir}/energy_prediction_{energy_model_name}.pkl'
     pointnet2_energy_om_path = getattr(cfg, 'pretrained_pointnet2_energy_model_path', None)
-    inference_energy(score_save_path, energy_save_path, energy_om_path=energy_om_path, pointnet2_energy_om_path=pointnet2_energy_om_path)
+    inference_energy(score_save_path, energy_save_path)
     aggregate_pose(score_save_path, energy_save_path, aggregate_save_path)
     scale_model_name = '_'.join(cfg.pretrained_scale_model_path.split('/')[-2:])
 
     cls_save_path = f'results/evaluation_results/{cfg.result_dir}/scale_prediction_{scale_model_name}.pkl'
-    inference_scale(score_save_path, aggregate_save_path, cls_save_path, scale_path=cfg.pretrained_scale_model_path)
+    inference_scale(score_save_path, aggregate_save_path, cls_save_path)
 
     dm_save_path = f'results/evaluation_results/{cfg.result_dir}/detect_match.pkl'
     get_detect_match(cls_save_path, dm_save_path)

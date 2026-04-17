@@ -146,7 +146,7 @@ class PoseNet(nn.Module):
             
 
     def load_ckpt(self, name=None, model_dir=None, model_path=False, load_model_only=False):
-        """load checkpoint from saved checkpoint or OM model"""
+        """load checkpoint from saved checkpoint"""
         if not model_path:
             if name == 'latest':
                 pass
@@ -162,41 +162,6 @@ class PoseNet(nn.Module):
         else:
             load_path = model_dir
 
-        # # Check if this is an OM model
-        # if load_path.endswith('.om'):
-        #     print(f"Detected OM model: {load_path}")
-
-        #     # Try to find metadata file
-        #     metadata_path = load_path.replace('.om', '_metadata.json')
-        #     if not os.path.exists(metadata_path):
-        #         # Try alternative naming
-        #         metadata_path = load_path.replace('.om', '.json')
-        #     if not os.path.exists(metadata_path):
-        #         metadata_path = None
-        #         print("Warning: Metadata file not found, using default configuration")
-
-        #     # Load OM model using OMInferSession
-        #     try:
-        #         from networks.om_backend import OMInferSession, is_om_model
-
-        #         # Determine device ID from cfg.device
-        #         device_id = 0
-        #         if isinstance(self.cfg.device, str) and 'npu:' in self.cfg.device:
-        #             device_id = int(self.cfg.device.split(':')[1])
-
-        #         # Create OM inference session
-        #         self.net = OMInferSession(
-        #             om_model_path=load_path,
-        #             metadata_path=metadata_path,
-        #             device_id=device_id
-        #         )
-        #         print(f"✓ OM model loaded successfully")
-        #         return  # Skip PyTorch checkpoint loading
-
-        #     except Exception as e:
-        #         raise RuntimeError(f"Failed to load OM model: {e}")
-
-        # # Original PyTorch checkpoint loading
         if not os.path.exists(load_path):
             raise ValueError("Checkpoint {} not exists.".format(load_path))
 
@@ -573,20 +538,12 @@ class PoseNet(nn.Module):
         bs = pose_samples.shape[0]
         repeat_num = pose_samples.shape[1]
 
-        # Extract precomputed rgb_feat if present, to pass to net()
-        precomputed_rgb_feat = data.pop('precomputed_rgb_feat', None)
-
         if mode == 'train':
             pts_feat = data['pts_feat'] if extract_feature == False else self.net(data, mode='pts_feature')
             rgb_feat = data['rgb_feat'] if extract_feature == False else self.net(data, mode='rgb_feature')
         elif mode == 'test':
             with torch.no_grad():
-                # Pass precomputed features to net() for pts_feature extraction
-                if precomputed_rgb_feat is not None:
-                    data['precomputed_rgb_feat'] = precomputed_rgb_feat
                 pts_feat = data['pts_feat'] if extract_feature == False else self.net(data, mode='pts_feature')
-                # Remove precomputed_rgb_feat before rgb_feature call
-                data.pop('precomputed_rgb_feat', None)
                 rgb_feat = data['rgb_feat'] if extract_feature == False else self.net(data, mode='rgb_feature')
         self.pts_feature = True
         
