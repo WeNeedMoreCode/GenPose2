@@ -85,39 +85,163 @@ if cfg.pretrained_scale_model_path:
     scale_agent.load_ckpt(model_dir=cfg.pretrained_scale_model_path, model_path=True, load_model_only=True)
     scale_agent.eval()
 
-def work_batch(test_batch, prev_pose):
-    batch_sample = process_batch(
-        batch_sample = test_batch, 
-        device=cfg.device, 
-        pose_mode=cfg.pose_mode,
-    )
-    
-    _prev_pose = prev_pose.clone()
-    _prev_pose[:, -3:] -= batch_sample['pts_center']
-    cfg.agent_type = 'score'
-    score_pred_results, _ = score_agent.pred_func(
-        data=batch_sample, 
-        repeat_num=cfg.eval_repeat_num, 
-        T0=cfg.T0,
-        init_x=_prev_pose,
-        return_average_res=False,
-        return_process=False,
-    )
-    score_feature = {
-        'pts_feat': batch_sample['pts_feat'].clone(),
-        'rgb_feat': (None if batch_sample['rgb_feat'] is None else batch_sample['rgb_feat'].clone()),
-    }
-    
-    cfg.agent_type = 'energy'
-    energy_pred_results = energy_agent.get_energy(
-        data=batch_sample, 
-        pose_samples=score_pred_results, 
-        T=1e-5,
-        mode='test', 
-        extract_feature=True
-    )
+# OM inference support
+is_om_model = cfg.pretrained_score_model_path.endswith('.om')
 
-    sorted_pose, sorted_energy = sort_poses_by_energy(score_pred_results, energy_pred_results)
+if is_om_model:
+    from om_wrappers import (create_score_network, create_ode_sampler,
+                             DINOv2Wrapper, EnergyNetWrapper,
+                             PointNet2EncoderWrapper, ScaleNetWrapper)
+    from networks.gf_algorithms.sde import init_sde, ve_sde_numpy
+    from datasets.datasets_omni6dpose import process_batch_numpy
+    from utils.misc import get_pose_dim
+
+    prior_fn, _, sde_fn, sampling_eps, _ = init_sde('ve')
+    pointnet2_score_om_path = getattr(cfg, 'pretrained_pointnet2_score_model_path', None)
+
+    score_net = create_score_network(
+        checkpoint_path=cfg.pretrained_score_model_path,
+        device=cfg.device,
+        pointnet2_om_path=pointnet2_score_om_path,
+    )
+    sde_dir = {'prior_fn': prior_fn, 'sde_fn': ve_sde_numpy}
+    sampler = create_ode_sampler(score_network=score_net, sde=sde_dir, device=cfg.device)
+
+    energy_net = EnergyNetWrapper(cfg.pretrained_energy_model_path, device=cfg.device)
+    pointnet2_energy_encoder = PointNet2EncoderWrapper(
+        cfg.pretrained_pointnet2_energy_model_path, device=cfg.device)
+    print(f"Using EnergyNet OM: {cfg.pretrained_energy_model_path}")
+
+    if cfg.pretrained_scale_model_path:
+        scale_net = ScaleNetWrapper(cfg.pretrained_scale_model_path, device=cfg.device)
+        print(f"Using ScaleNet OM: {cfg.pretrained_scale_model_path}")
+
+    if cfg.dino != 'none':
+        dino_om_path = getattr(cfg, 'pretrained_dino_model_path', None)
+        if dino_om_path is not None and dino_om_path.endswith('.om'):
+            dino_model = DINOv2Wrapper(dino_om_path, device=cfg.device)
+            print(f"Using DINOv2 OM: {dino_om_path}")
+        else:
+            import torch.hub
+            dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14').to(cfg.device)
+            dino_model.requires_grad_(False)
+            print("Using DINOv2 PyTorch")
+
+        def extract_dino_features(batch_sample):
+            roi_rgb = batch_sample['roi_rgb']
+            roi_xs = batch_sample['roi_xs']
+            roi_ys = batch_sample['roi_ys']
+            if is_om_model:
+                return dino_model(roi_rgb, roi_xs, roi_ys)
+            feat = dino_model.get_intermediate_layers(roi_rgb)[0]
+            xs = roi_xs // 14
+            ys = roi_ys // 14
+            pos = xs * 16 + ys
+            pos = torch.unsqueeze(pos, -1).expand(-1, -1, 384)
+            rgb_feat = torch.gather(feat, 1, pos)
+            rgb_feat.requires_grad_(False)
+            return rgb_feat
+    else:
+        def extract_dino_features(batch_sample):
+            return None
+
+def work_batch(test_batch, prev_pose):
+    if is_om_model:
+        batch_sample = process_batch_numpy(test_batch, pose_mode=cfg.pose_mode)
+    else:
+        batch_sample = process_batch(
+            batch_sample = test_batch,
+            device=cfg.device,
+            pose_mode=cfg.pose_mode,
+        )
+
+    bs = prev_pose.shape[0]
+    pose_dim = get_pose_dim(cfg.pose_mode) if is_om_model else prev_pose.shape[1]
+    repeat_num = cfg.eval_repeat_num
+
+    if is_om_model:
+        # --- OM score path ---
+        # 1. DINOv2 + PointNet2 feature extraction
+        rgb_feat = extract_dino_features(batch_sample)
+        pts_feat = score_net.extract_pts_feat(batch_sample['pts'], rgb_feat)
+
+        # 2. Construct init_x: repeat prev_pose and add noise (align with PTH cond_ode_sampler)
+        _prev_pose = prev_pose.clone()
+        _prev_pose[:, -3:] -= torch.from_numpy(batch_sample['pts_center'])
+        noise = prior_fn((bs * repeat_num, pose_dim), T=cfg.T0).numpy()
+        prev_pose_repeated = np.repeat(_prev_pose.numpy(), repeat_num, axis=0)
+        init_x_repeated = prev_pose_repeated + noise
+
+        pts_feat_repeated = np.repeat(pts_feat[np.newaxis, ...], repeat_num, axis=1).reshape(bs * repeat_num, -1)
+
+        _, sampled_pose = sampler.sample(
+            pts_feat=pts_feat_repeated,
+            rgb_feat=None,
+            batch_size=bs * repeat_num,
+            pose_dim=pose_dim,
+            T=cfg.T0,
+            eps=sampling_eps,
+            rtol=1e-5,
+            atol=1e-5,
+            denoise=True,
+            init_x=init_x_repeated,
+            pts_center=None if batch_sample.get('pts_center') is None else
+                np.repeat(batch_sample['pts_center'][:, np.newaxis, :], repeat_num, axis=1).reshape(bs * repeat_num, -1),
+        )
+        score_pred_results = sampled_pose.reshape(bs, repeat_num, pose_dim)
+
+        score_feature = {
+            'pts_feat': pts_feat,
+            'rgb_feat': rgb_feat,
+        }
+
+        # --- OM energy path ---
+        pts_with_rgb = np.concatenate([batch_sample['pts'], rgb_feat], axis=-1)  # [bs, 1024, 387]
+        pts_feat_energy = pointnet2_energy_encoder(pts_with_rgb)
+
+        pose_samples = score_pred_results.reshape(bs * repeat_num, -1).astype(np.float32)
+        pose_samples[:, -3:] -= np.repeat(batch_sample['pts_center'], repeat_num, axis=0)
+        t = np.full((bs * repeat_num, 1), 1e-5, dtype=np.float32)
+        pts_feat_repeated_energy = np.repeat(pts_feat_energy[np.newaxis, ...], repeat_num, axis=1).reshape(bs * repeat_num, -1)
+
+        with torch.no_grad():
+            pred_energy = energy_net(pts_feat_repeated_energy, pose_samples, t)
+        energy_pred_results = pred_energy.reshape(bs, repeat_num, -1)
+
+    else:
+        # --- PTH path (original) ---
+        _prev_pose = prev_pose.clone()
+        _prev_pose[:, -3:] -= batch_sample['pts_center']
+        cfg.agent_type = 'score'
+        score_pred_results, _ = score_agent.pred_func(
+            data=batch_sample,
+            repeat_num=cfg.eval_repeat_num,
+            T0=cfg.T0,
+            init_x=_prev_pose,
+            return_average_res=False,
+            return_process=False,
+        )
+        score_feature = {
+            'pts_feat': batch_sample['pts_feat'].clone(),
+            'rgb_feat': (None if batch_sample['rgb_feat'] is None else batch_sample['rgb_feat'].clone()),
+        }
+
+        cfg.agent_type = 'energy'
+        energy_pred_results = energy_agent.get_energy(
+            data=batch_sample,
+            pose_samples=score_pred_results,
+            T=1e-5,
+            mode='test',
+            extract_feature=True
+        )
+
+    sorted_pose, sorted_energy = sort_poses_by_energy(
+        score_pred_results, energy_pred_results)
+    # Convert numpy to tensor for aggregate operations
+    if is_om_model:
+        score_pred_results = torch.from_numpy(score_pred_results).to(cfg.device)
+        energy_pred_results = torch.from_numpy(energy_pred_results).to(cfg.device)
+        sorted_pose = torch.from_numpy(sorted_pose).to(cfg.device)
     bs = score_pred_results.shape[0]
     retain_num = int(cfg.eval_repeat_num * cfg.retain_ratio)
     good_pose = sorted_pose[:, :retain_num, :]
@@ -146,12 +270,15 @@ def work_batch(test_batch, prev_pose):
     gt_length = test_batch['bbox_side_len'].numpy()
 
     if cfg.pretrained_scale_model_path:
-        cfg.agent_type = 'scale'
-        batch_sample.update(score_feature)
-        batch_sample['axes'] = aggregated_pose[:, :3, :3].to(cfg.device)
-        with torch.no_grad():
-            pred_length = scale_agent.net(batch_sample) 
-        pred_length = pred_length.cpu().numpy()
+        if is_om_model:
+            pred_length = scale_net(pts_feat, aggregated_pose[:, :3, :3])
+        else:
+            cfg.agent_type = 'scale'
+            batch_sample.update(score_feature)
+            batch_sample['axes'] = aggregated_pose[:, :3, :3].to(cfg.device)
+            with torch.no_grad():
+                pred_length = scale_agent.net(batch_sample)
+            pred_length = pred_length.cpu().numpy()
     else:
         pred_length = np.ones((pred_pose.shape[0], 3))
 
