@@ -254,20 +254,16 @@ def inference_score_decoupled(save_path):
         pts_center = batch_sample.get('pts_center', None)
 
         # Generate random initial values for all repeats at once
-        init_x_all = prior_fn((bs, cfg.eval_repeat_num, pose_dim), T=cfg.T0)
+        init_x_all = prior_fn((bs, cfg.eval_repeat_num, pose_dim), T=cfg.T0).cpu().numpy()
+        init_x_repeated = init_x_all.reshape(bs * cfg.eval_repeat_num, pose_dim)
 
         # Repeat features and init_x to process all at once
         if is_om_model:
             pts_feat_repeated = np.repeat(pts_feat[np.newaxis, ...], cfg.eval_repeat_num, axis=1).reshape(bs * cfg.eval_repeat_num, -1)
-        else:
-            init_x_all = init_x_all.to(cfg.device)
-            pts_feat_repeated = pts_feat.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
-
-        init_x_repeated = init_x_all.view(bs * cfg.eval_repeat_num, pose_dim)
-        if is_om_model:
             pts_center_repeated = None if pts_center is None else \
                 np.repeat(pts_center[:, np.newaxis, :], cfg.eval_repeat_num, axis=1).reshape(bs * cfg.eval_repeat_num, -1)
         else:
+            pts_feat_repeated = pts_feat.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
             pts_center_repeated = None if pts_center is None else \
                 pts_center.unsqueeze(1).repeat(1, cfg.eval_repeat_num, 1).view(bs * cfg.eval_repeat_num, -1)
 
@@ -691,7 +687,7 @@ if __name__ == '__main__':
         import torch_npu
         torch_npu.npu.set_compile_mode(jit_compile=False)
     score_net = inference_score_decoupled(score_save_path)
-    if is_om_model:
+    if is_om_model and score_net:
         score_net.release()
         del score_net
         gc.collect()
