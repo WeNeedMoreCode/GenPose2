@@ -162,13 +162,13 @@ def work_batch(test_batch, prev_pose):
     repeat_num = cfg.eval_repeat_num
 
     if is_om_model:
-        # --- OM score path ---
+        # OM score path
         t0 = time.time()
-        # 1. DINOv2 + PointNet2 feature extraction
+        # DINOv2 + PointNet2 feature extraction
         rgb_feat = extract_dino_features(batch_sample)
         pts_feat = score_net.extract_pts_feat(batch_sample['pts'], rgb_feat)
 
-        # 2. Construct init_x: repeat prev_pose and add noise (align with PTH cond_ode_sampler)
+        # Construct init_x: repeat prev_pose and add noise 
         _prev_pose = prev_pose.cpu().numpy().copy()
         _prev_pose[:, -3:] -= batch_sample['pts_center']
         noise = prior_fn((bs * repeat_num, pose_dim), T=cfg.T0).numpy()
@@ -198,7 +198,7 @@ def work_batch(test_batch, prev_pose):
             'rgb_feat': rgb_feat,
         }
 
-        # --- OM energy path ---
+        # OM energy
         pts_with_rgb = np.concatenate([batch_sample['pts'], rgb_feat], axis=-1)  # [bs, 1024, 387]
         pts_feat_energy = pointnet2_energy_encoder(pts_with_rgb)
 
@@ -214,7 +214,7 @@ def work_batch(test_batch, prev_pose):
         perf_stats['score_samples'] += bs
 
     else:
-        # --- PTH path (original) ---
+        # PTH path (original) 
         t0 = time.time()
         _prev_pose = prev_pose.clone()
         _prev_pose[:, -3:] -= batch_sample['pts_center']
@@ -248,7 +248,7 @@ def work_batch(test_batch, prev_pose):
         score_pred_results = torch.from_numpy(score_pred_results)
         energy_pred_results = torch.from_numpy(energy_pred_results)
 
-    # --- aggregate + scale ---
+    # aggregate + scale
     t0 = time.time()
     sorted_pose, sorted_energy = sort_poses_by_energy(
         score_pred_results, energy_pred_results)
@@ -443,27 +443,38 @@ pbar.close()
 print("\n" + "="*60)
 print("Performance Statistics")
 print("="*60)
-total_samples = perf_stats['score_samples']
-total_time = sum(perf_stats['score_time']) + sum(perf_stats['aggregate_time'])
-for stage_name, time_key, samples_key in [
+
+stages = [
     ('Score + Energy', 'score_time', 'score_samples'),
     ('Aggregate + Scale', 'aggregate_time', 'aggregate_samples'),
-]:
+]
+
+for stage_name, time_key, samples_key in stages:
     times = perf_stats[time_key]
     samples = perf_stats[samples_key]
     if len(times) > 0:
         t_total = sum(times)
+        fps = samples / t_total if t_total > 0 else 0
         print(f"\n{stage_name}:")
         print(f"  Total batches: {len(times)}")
         print(f"  Total samples: {samples}")
         print(f"  Total time: {t_total:.3f}s")
         print(f"  Avg batch time: {t_total/len(times):.3f}s")
-        print(f"  FPS: {samples/t_total:.3f}" if t_total > 0 else "")
-print(f"\nOverall:")
-print(f"  Total samples: {total_samples}")
-print(f"  Total time: {total_time:.3f}s")
-print(f"  Overall FPS: {total_samples/total_time:.3f}" if total_time > 0 else "")
-print("="*60)
+        print(f"  FPS: {fps:.3f}")
+        print(f"  Avg latency per sample: {1000/fps:.2f}ms" if fps > 0 else "")
+
+total_samples = perf_stats['score_samples']
+total_time = sum(perf_stats['score_time']) + sum(perf_stats['aggregate_time'])
+
+if total_time > 0:
+    overall_fps = total_samples / total_time
+    print(f"\n{'='*60}")
+    print(f"Overall Pipeline:")
+    print(f"  Total samples: {total_samples}")
+    print(f"  Total time: {total_time:.3f}s")
+    print(f"  Overall FPS: {overall_fps:.3f}")
+    print(f"  Avg latency per sample: {1000/overall_fps:.2f}ms")
+    print("="*60)
 
 all_dm = []
 all_crit = []
