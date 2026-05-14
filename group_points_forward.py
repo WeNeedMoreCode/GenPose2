@@ -68,26 +68,24 @@ def group_points_forward():
     out_elems = C * NPOINTS * NSAMPLE  # 2048
     # vec_dup: 用 0 填充，mask=64 (float32 最大 mask), repeat 直到覆盖全部
     full_repeats = out_elems // 64  # 32
-    tik_inst.vec_dup(64, out_ub[0], 0, full_repeats, 8, 8)
+    tik_inst.vec_dup(64, out_ub[0], 0, full_repeats, 8)
 
     # ---- Step 4: Gather 循环 ----
     # out[c * NPOINTS * NSAMPLE + pt * NSAMPLE + s] = points[c * N + idx[pt * NSAMPLE + s]]
+    # 关键：out_base = c*NPOINTS*NSAMPLE + pt*NSAMPLE 始终是 8 的倍数（对齐）
+    # 用逐 bit 模式 mask 选择块内第 s 个元素写入，其余元素保持不变
     with tik_inst.for_range(0, C, name="c") as c:
         with tik_inst.for_range(0, NPOINTS, name="pt") as pt:
-            with tik_inst.for_range(0, NSAMPLE, name="s") as s:
-                # 读取索引值
+            for s in range(NSAMPLE):  # Python 循环展开，s 是 Python int
                 idx_scalar = tik_inst.Scalar("int32", name="idx_val")
                 idx_scalar.set_as(idx_ub[pt * NSAMPLE + s])
 
-                # 从 points_ub 中按索引取值
                 val_scalar = tik_inst.Scalar(DTYPE, name="val")
                 val_scalar.set_as(points_ub[c * N + idx_scalar])
 
-                # 写入 out_ub
-                out_offset = c * NPOINTS * NSAMPLE + pt * NSAMPLE + s
-                out_scalar = tik_inst.Scalar(DTYPE, name="out_val")
-                out_scalar.set_as(val_scalar)
-                tik_inst.vec_dup(1, out_ub[out_offset], out_scalar, 1, 1, 1)
+                # bit-mode mask: [高64位, 低64位]，float32 只用低64位
+                out_base = c * NPOINTS * NSAMPLE + pt * NSAMPLE
+                tik_inst.vec_dup([0, 1 << s], out_ub[out_base], val_scalar, 1, 1)
 
     # ---- Step 5: 搬出 out (UB → GM) ----
     out_total_bytes = C * NPOINTS * NSAMPLE * DTYPE_SIZE
