@@ -24,11 +24,10 @@ B = 1
 N = 1024
 NPOINTS = 512
 DTYPE = "float32"
-DTYPE_SIZE = 4
-BLOCK_SIZE = 32
-ELEMS_PER_BLOCK = BLOCK_SIZE // DTYPE_SIZE  # 8 float32 per block
-VEC_WIDTH = 64  # float32 向量宽度
-N_BLOCKS = N // VEC_WIDTH  # 16 blocks
+BLOCK_SIZE = 32  # bytes
+VEC_WIDTH = 64   # float32 向量宽度
+N_BLOCKS = N // VEC_WIDTH  # 16
+BLOCKS_OF_IDX = NPOINTS // 8  # 64 (每 8 个 int32 = 32Byte = 1 block)
 
 
 def fps_forward():
@@ -47,89 +46,43 @@ def fps_forward():
     dist_ub = tik_inst.Tensor(DTYPE, (VEC_WIDTH,), name="dist_ub", scope=tik.scope_ubuf)
 
     # ---- Step 1: 搬入 xyz (GM → UB) ----
-    xyz_burst = 3 * N * DTYPE_SIZE // BLOCK_SIZE  # 384 blocks
+    xyz_burst = 3 * N * 4 // BLOCK_SIZE  # 384 blocks
     tik_inst.data_move(xyz_ub, xyz_gm, 0, 1, xyz_burst, 0, 0)
 
     # ---- Step 2: 初始化 distance = 1e10 ----
-    init_repeats = N // VEC_WIDTH  # 16
-    tik_inst.vec_dup(VEC_WIDTH, distance_ub[0], 1e10, init_repeats, 8)
+    tik_inst.vec_dup(VEC_WIDTH, distance_ub[0], 1e10, N // VEC_WIDTH, 8)
 
     # ---- Step 3: 初始化 idx[0] = 0, old = 0 ----
     old = tik_inst.Scalar("int32", name="old", init_value=0)
-    first_val = tik_inst.Scalar("int32", name="first_val", init_value=0)
-    tik_inst.vec_dup([0, 1], idx_ub[0], first_val, 1, 1)  # bit-mode mask 写 idx[0]
+    zero_scalar = tik_inst.Scalar("int32", name="zero_s", init_value=0)
+    tik_inst.vec_dup([0, 1], idx_ub[0], zero_scalar, 1, 1)
 
     # ---- Step 4: 主循环 ----
-    with tik_inst.for_range(1, NPOINTS, name="j") as j:
-        # 4a. 读质心坐标
-        x1 = tik_inst.Scalar(DTYPE, name="x1")
-        y1 = tik_inst.Scalar(DTYPE, name="y1")
-        z1 = tik_inst.Scalar(DTYPE, name="z1")
-        x1.set_as(xyz_ub[old])
-        y1.set_as(xyz_ub[N + old])
-        z1.set_as(xyz_ub[2 * N + old])
-
-        # 4b. 距离计算：16 个 block，每 block 64 个点
-        for block in range(N_BLOCKS):
-            base = block * VEC_WIDTH
-
-            # dx²
-            tik_inst.vec_dup(VEC_WIDTH, temp_ub[0], x1, 1, 1)
-            tik_inst.vec_sub(VEC_WIDTH, dist_ub[0], xyz_ub[base], temp_ub[0], 1, 8, 8, 8)
-            tik_inst.vec_mul(VEC_WIDTH, dist_ub[0], dist_ub[0], dist_ub[0], 1, 8, 8, 8)
-
-            # dy² 累加
-            tik_inst.vec_dup(VEC_WIDTH, temp_ub[0], y1, 1, 1)
-            tik_inst.vec_sub(VEC_WIDTH, temp_ub[0], xyz_ub[N + base], temp_ub[0], 1, 8, 8, 8)
-            tik_inst.vec_mul(VEC_WIDTH, temp_ub[0], temp_ub[0], temp_ub[0], 1, 8, 8, 8)
-            tik_inst.vec_add(VEC_WIDTH, dist_ub[0], dist_ub[0], temp_ub[0], 1, 8, 8, 8)
-
-            # dz² 累加
-            tik_inst.vec_dup(VEC_WIDTH, temp_ub[0], z1, 1, 1)
-            tik_inst.vec_sub(VEC_WIDTH, temp_ub[0], xyz_ub[2 * N + base], temp_ub[0], 1, 8, 8, 8)
-            tik_inst.vec_mul(VEC_WIDTH, temp_ub[0], temp_ub[0], temp_ub[0], 1, 8, 8, 8)
-            tik_inst.vec_add(VEC_WIDTH, dist_ub[0], dist_ub[0], temp_ub[0], 1, 8, 8, 8)
-
-            # distance = min(distance, dist)
-            tik_inst.vec_min(VEC_WIDTH, distance_ub[base], distance_ub[base], dist_ub[0], 1, 8, 8, 8)
-
-        # 4c. argmax：Scalar 扫描找最大距离及其索引
-        best_val = tik_inst.Scalar(DTYPE, name="best_val")
-        best_val.set_as(-1.0)
-        best_idx = tik_inst.Scalar("int32", name="best_idx")
-        best_idx.set_as(0)
-
-        with tik_inst.for_range(0, N, name="k") as k:
-            val = tik_inst.Scalar(DTYPE, name="val")
-            val.set_as(distance_ub[k])
-            with tik_inst.if_scope(val > best_val):
-                best_val.set_as(val)
-                best_idx.set_as(k)
-
-        # 4d. 写入 idx[j] 并更新 old
-        # idx 是 int32，每个元素占 4 字节
-        # 用 Scalar 直接写入（需验证是否支持 int32 tensor 的 Scalar 写入）
-        # 安全方式：通过 data_move 写回 GM 或用 vec_dup
-        old.set_as(best_idx)
-        # 将 best_idx 写入 idx_ub[j]
-        # j 是 TIK Expr，不能直接 idx_ub[j] = best_idx
-        # 用 vec_dup + bit-mode mask 写入对齐块内的正确位置
-        # j 的范围是 1..511，需要计算 j 所在的对齐块基址和块内偏移
-        # 简化：用 Scalar 索引写入（如果支持的话）
-        idx_scalar = tik_inst.Scalar("int32", name="idx_scalar")
-        idx_scalar.set_as(best_idx)
-        # TIK 不支持 Scalar 索引写入 tensor，需要用其他方式
-        # 方案：先写到 temp Scalar，再用 data_move 或 vec_dup 写入
-        # 这里先用 tik_inst 的 tensor_scalar_set 如果有的话
-        # 临时方案：写入 GM 然后搬回来（太慢）
-        # 最佳方案：用 vec_dup 写入对齐块
-        # idx 是 int32，对齐要求是 8 个 int32 = 32 bytes
-        # 但 bit-mode mask 是按 float32 设计的，int32 也适用吗？
-        # 先尝试用 Scalar 赋值
-        tik_inst.vec_dup([0, 1], idx_ub[j], idx_scalar, 1, 1)
+    # 外层按 8 个一组循环（保证 idx 写入基址对齐）
+    # 内层 Python for loop 用 bit-mode mask 写入
+    with tik_inst.for_range(0, BLOCKS_OF_IDX, name="block_j") as block_j:
+        for s in range(8):
+            # j = block_j * 8 + s
+            # 跳过 j=0（block_j=0, s=0）
+            if s == 0:
+                with tik_inst.if_scope(block_j == 0):
+                    # j=0: 已初始化，跳过
+                    pass
+                with tik_inst.else_scope():
+                    # j = block_j * 8 > 0: 正常 FPS 迭代
+                    _fps_iteration(tik_inst, xyz_ub, distance_ub, temp_ub, dist_ub,
+                                   old, N, VEC_WIDTH, N_BLOCKS)
+                    # 写入 idx: 基址 block_j*8（对齐），bit mask 选第 0 个元素
+                    _write_idx(tik_inst, idx_ub, block_j, s, old)
+            else:
+                # s > 0: 正常 FPS 迭代
+                _fps_iteration(tik_inst, xyz_ub, distance_ub, temp_ub, dist_ub,
+                               old, N, VEC_WIDTH, N_BLOCKS)
+                # 写入 idx
+                _write_idx(tik_inst, idx_ub, block_j, s, old)
 
     # ---- Step 5: 搬出 idx (UB → GM) ----
-    idx_burst = NPOINTS * 4 // BLOCK_SIZE  # 256 blocks (512 * 4 / 32 = 64)
+    idx_burst = NPOINTS * 4 // BLOCK_SIZE  # 64 blocks
     tik_inst.data_move(idx_gm, idx_ub, 0, 1, idx_burst, 0, 0)
 
     # ---- Step 6: 编译 ----
@@ -139,8 +92,67 @@ def fps_forward():
     return tik_inst
 
 
+def _fps_iteration(tik_inst, xyz_ub, distance_ub, temp_ub, dist_ub,
+                   old, N, VEC_WIDTH, N_BLOCKS):
+    """一次 FPS 迭代：读质心 → 算距离 → 更新最小距离 → argmax → 更新 old"""
+    # 读质心
+    x1 = tik_inst.Scalar(DTYPE, name="x1")
+    y1 = tik_inst.Scalar(DTYPE, name="y1")
+    z1 = tik_inst.Scalar(DTYPE, name="z1")
+    x1.set_as(xyz_ub[old])
+    y1.set_as(xyz_ub[N + old])
+    z1.set_as(xyz_ub[2 * N + old])
+
+    # 距离计算：16 个 block，每 block 64 个点
+    for block in range(N_BLOCKS):
+        base = block * VEC_WIDTH
+
+        # dx²
+        tik_inst.vec_dup(VEC_WIDTH, temp_ub[0], x1, 1, 1)
+        tik_inst.vec_sub(VEC_WIDTH, dist_ub[0], xyz_ub[base], temp_ub[0], 1, 8, 8, 8)
+        tik_inst.vec_mul(VEC_WIDTH, dist_ub[0], dist_ub[0], dist_ub[0], 1, 8, 8, 8)
+
+        # dy² 累加
+        tik_inst.vec_dup(VEC_WIDTH, temp_ub[0], y1, 1, 1)
+        tik_inst.vec_sub(VEC_WIDTH, temp_ub[0], xyz_ub[N + base], temp_ub[0], 1, 8, 8, 8)
+        tik_inst.vec_mul(VEC_WIDTH, temp_ub[0], temp_ub[0], temp_ub[0], 1, 8, 8, 8)
+        tik_inst.vec_add(VEC_WIDTH, dist_ub[0], dist_ub[0], temp_ub[0], 1, 8, 8, 8)
+
+        # dz² 累加
+        tik_inst.vec_dup(VEC_WIDTH, temp_ub[0], z1, 1, 1)
+        tik_inst.vec_sub(VEC_WIDTH, temp_ub[0], xyz_ub[2 * N + base], temp_ub[0], 1, 8, 8, 8)
+        tik_inst.vec_mul(VEC_WIDTH, temp_ub[0], temp_ub[0], temp_ub[0], 1, 8, 8, 8)
+        tik_inst.vec_add(VEC_WIDTH, dist_ub[0], dist_ub[0], temp_ub[0], 1, 8, 8, 8)
+
+        # distance = min(distance, d)
+        tik_inst.vec_min(VEC_WIDTH, distance_ub[base], distance_ub[base], dist_ub[0], 1, 8, 8, 8)
+
+    # argmax：TIK for_range 硬件循环 + Scalar 比较
+    best_val = tik_inst.Scalar(DTYPE, name="best_val")
+    best_val.set_as(-1.0)
+    best_idx = tik_inst.Scalar("int32", name="best_idx")
+    best_idx.set_as(0)
+
+    with tik_inst.for_range(0, N, name="k") as k:
+        val = tik_inst.Scalar(DTYPE, name="val")
+        val.set_as(distance_ub[k])
+        with tik_inst.if_scope(val > best_val):
+            best_val.set_as(val)
+            best_idx.set_as(k)
+
+    old.set_as(best_idx)
+
+
+def _write_idx(tik_inst, idx_ub, block_j, s, old):
+    """用 bit-mode mask 写入 idx_ub[block_j*8 + s]"""
+    base = block_j * 8  # 对齐基址（8 的倍数）
+    idx_scalar = tik_inst.Scalar("int32", name="idx_s")
+    idx_scalar.set_as(old)
+    tik_inst.vec_dup([0, 1 << s], idx_ub[base], idx_scalar, 1, 1)
+
+
 def pytorch_fps(xyz, npoints):
-    """参考实现：纯 Python FPS 算法"""
+    """参考实现：纯 numpy FPS 算法"""
     B, N, _ = xyz.shape
     idx = np.zeros((B, npoints), dtype=np.int32)
     distance = np.ones((B, N), dtype=np.float32) * 1e10
@@ -166,7 +178,7 @@ if __name__ == "__main__":
     xyz = np.random.randn(B, N, 3).astype(np.float32)
 
     # 转置输入：[N, 3] → [3, N] = x连续, y连续, z连续
-    xyz_t = xyz.transpose(0, 2, 1).reshape(-1)  # [3*N]
+    xyz_t = xyz.transpose(0, 2, 1).reshape(-1)
 
     # 期望输出
     expected_idx = pytorch_fps(xyz, NPOINTS)
