@@ -19,15 +19,15 @@ from tbe import tik
 import tbe.common.platform as tbe_platform
 import numpy as np
 
-# 固定参数
+# 固定参数（tikdb 验证用小参数，NPU 性能测试改回大参数）
 B = 1
 N = 1024
 NPOINTS = 512
 DTYPE = "float32"
 BLOCK_SIZE = 32  # bytes
 VEC_WIDTH = 64   # float32 向量宽度
-N_BLOCKS = N // VEC_WIDTH  # 16
-BLOCKS_OF_IDX = NPOINTS // 8  # 64 (每 8 个 int32 = 32Byte = 1 block)
+N_BLOCKS = N // VEC_WIDTH  # 128//64=2 或 1024//64=16
+BLOCKS_OF_IDX = NPOINTS // 8  # 32//8=4 或 512//8=64
 
 
 def fps_forward():
