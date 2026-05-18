@@ -94,6 +94,67 @@ class FurthestPointSamplingAscendC:
 
         return idx.long()
 
+
+_LIB_MC = None
+
+def _get_mc_lib():
+    global _LIB_MC
+    if _LIB_MC is None:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        lib_path = os.path.join(script_dir, "out", "lib", "libfps_host_multicore.so")
+        if not os.path.exists(lib_path):
+            lib_path = os.path.join(script_dir, "libfps_host_multicore.so")
+        if not os.path.exists(lib_path):
+            raise FileNotFoundError(
+                f"libfps_host_multicore.so not found. Run 'bash run.sh -r npu' first. "
+                f"Searched: {script_dir}/out/lib/ and {script_dir}/"
+            )
+        _LIB_MC = ctypes.CDLL(lib_path)
+        _LIB_MC.fps_run_multicore.restype = ctypes.c_int
+        _LIB_MC.fps_run_multicore.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    return _LIB_MC
+
+
+class FurthestPointSamplingMultiCore:
+    """Multi-core AscendC FPS using 8 AI Cores."""
+
+    def __init__(self):
+        self.lib = _get_mc_lib()
+        self._warmup_done = False
+
+    def _warmup(self):
+        if self._warmup_done:
+            return
+        dummy_xyz = torch.zeros(3 * 1024, device='npu:0', dtype=torch.float32)
+        dummy_idx = torch.zeros(512, device='npu:0', dtype=torch.int32)
+        torch.npu.synchronize()
+        self.lib.fps_run_multicore(
+            ctypes.c_void_p(dummy_xyz.data_ptr()),
+            ctypes.c_void_p(dummy_idx.data_ptr()),
+        )
+        self._warmup_done = True
+
+    @torch.no_grad()
+    def __call__(self, xyz, npoints):
+        assert xyz.is_npu and xyz.dtype == torch.float32 and xyz.dim() == 3
+        B, N, C = xyz.shape
+        assert C == 3 and N == 1024 and npoints == 512
+
+        self._warmup()
+
+        xyz_t = xyz.permute(0, 2, 1).contiguous().reshape(B, -1)
+        idx = torch.zeros(B, npoints, dtype=torch.int32, device=xyz.device)
+        torch.npu.synchronize()
+
+        for b in range(B):
+            ret = self.lib.fps_run_multicore(
+                ctypes.c_void_p(xyz_t[b].data_ptr()),
+                ctypes.c_void_p(idx[b].data_ptr()),
+            )
+            assert ret == 0, f"fps_run_multicore failed for batch {b}"
+
+        return idx.long()
+
     def benchmark(self, xyz, npoints, warmup=5, repeats=100):
         """
         Benchmark FPS kernel performance.
@@ -214,36 +275,54 @@ if __name__ == "__main__":
         print(f"  pointnet2_ops: SKIP ({e})")
         ops_ms, ops_idx = None, None
 
-    # --- 3. AscendC kernel ---
+    # --- 3. AscendC kernel (single core) ---
     try:
         fps_ascendc = FurthestPointSamplingAscendC()
-        # Warmup done inside benchmark()
         def bench_ascendc_fps(xyz, np):
             return fps_ascendc(xyz, np)
 
-        ac_ms, ac_idx = run_bench("AscendC kernel", bench_ascendc_fps, xyz, npoints)
+        ac_ms, ac_idx = run_bench("AscendC (1 core)", bench_ascendc_fps, xyz, npoints)
     except Exception as e:
-        print(f"  AscendC kernel: SKIP ({e})")
+        print(f"  AscendC (1 core): SKIP ({e})")
         ac_ms, ac_idx = None, None
+
+    # --- 4. AscendC multi-core ---
+    try:
+        fps_mc = FurthestPointSamplingMultiCore()
+        def bench_mc_fps(xyz, np):
+            return fps_mc(xyz, np)
+
+        mc_ms, mc_idx = run_bench("AscendC (4 cores)", bench_mc_fps, xyz, npoints)
+    except Exception as e:
+        print(f"  AscendC (4 cores): SKIP ({e})")
+        mc_ms, mc_idx = None, None
 
     # --- Summary ---
     print(f"\n=== Summary ===")
-    print(f"  PyTorch (pure): {py_ms:.3f}ms  (baseline)")
+    print(f"  PyTorch (pure):  {py_ms:.3f}ms  (baseline)")
     if ops_ms is not None:
-        print(f"  pointnet2_ops:  {ops_ms:.3f}ms  ({py_ms/ops_ms:.1f}x faster than PyTorch)")
+        print(f"  pointnet2_ops:   {ops_ms:.3f}ms  ({py_ms/ops_ms:.1f}x faster)")
     if ac_ms is not None:
-        print(f"  AscendC kernel: {ac_ms:.3f}ms  ({py_ms/ac_ms:.1f}x faster than PyTorch)")
+        print(f"  AscendC (1 core): {ac_ms:.3f}ms  ({py_ms/ac_ms:.1f}x faster)")
+    if mc_ms is not None:
+        print(f"  AscendC (4 cores): {mc_ms:.3f}ms  ({py_ms/mc_ms:.1f}x faster)")
 
     # --- Correctness ---
     print(f"\n=== Correctness ===")
     if ac_idx is not None:
         match = torch.equal(py_idx, ac_idx)
-        print(f"  PyTorch vs AscendC: {'MATCH' if match else 'MISMATCH'}")
+        print(f"  PyTorch vs AscendC (1 core): {'MATCH' if match else 'MISMATCH'}")
         if not match:
             diff = (py_idx != ac_idx).sum().item()
             print(f"    Mismatches: {diff}/{npoints}")
+    if mc_idx is not None:
+        match = torch.equal(py_idx, mc_idx)
+        print(f"  PyTorch vs AscendC (4 cores): {'MATCH' if match else 'MISMATCH'}")
+        if not match:
+            diff = (py_idx != mc_idx).sum().item()
+            print(f"    Mismatches: {diff}/{npoints}")
             print(f"    PyTorch[:10]: {py_idx[0, :10].tolist()}")
-            print(f"    AscendC[:10]: {ac_idx[0, :10].tolist()}")
+            print(f"    MultiCore[:10]: {mc_idx[0, :10].tolist()}")
     if ops_idx is not None:
         match = torch.equal(py_idx, ops_idx)
         print(f"  PyTorch vs pn2_ops: {'MATCH' if match else 'MISMATCH'}")

@@ -12,7 +12,10 @@ if(CMAKE_INSTALL_PREFIX STREQUAL /usr/local)
     set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_LIST_DIR}/out" CACHE STRING "path for install()" FORCE)
 endif()
 
-file(GLOB KERNEL_FILES ${CMAKE_CURRENT_SOURCE_DIR}/fps_custom.cpp)
+file(GLOB KERNEL_FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/fps_custom.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/fps_custom_multicore.cpp
+)
 
 if("${RUN_MODE}" STREQUAL "cpu")
     include(cmake/cpu_lib.cmake)
@@ -50,6 +53,17 @@ if("${RUN_MODE}" STREQUAL "npu" OR "${RUN_MODE}" STREQUAL "sim")
         ascendc_kernels_${RUN_MODE}
     )
     install(TARGETS fps_host
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    )
+
+    # Multi-core host wrapper
+    add_library(fps_host_multicore SHARED ${CMAKE_CURRENT_SOURCE_DIR}/fps_host_multicore.cpp)
+    target_compile_options(fps_host_multicore PRIVATE -O2 -std=c++17 -D_GLIBCXX_USE_CXX11_ABI=0)
+    target_link_libraries(fps_host_multicore PRIVATE
+        host_intf_pub
+        ascendc_kernels_${RUN_MODE}
+    )
+    install(TARGETS fps_host_multicore
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     )
 endif()
