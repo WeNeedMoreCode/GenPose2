@@ -1,5 +1,5 @@
 """
-Debug test for 8-core FPS kernels (v1 and v2).
+Debug test for 8-core FPS kernels (v1, v2, v3).
 Compares intermediate values to identify where precision mismatch occurs.
 """
 import ctypes
@@ -93,40 +93,47 @@ def run_debug():
     torch.manual_seed(42)
     xyz = torch.randn(1, N, 3, device='npu:0', dtype=torch.float32)
 
-    from fps_wrapper import FurthestPointSamplingAscendC, FurthestPointSamplingMultiCoreV2
+    from fps_wrapper import FurthestPointSamplingAscendC
     fps_1c = FurthestPointSamplingAscendC()
-    fps_v2 = FurthestPointSamplingMultiCoreV2()
-
     idx_1c = fps_1c(xyz, NPOINTS)
-    idx_v2 = fps_v2(xyz, NPOINTS)
     idx_py = pointnet2_ops._furthest_point_sampling(xyz, NPOINTS)
 
     print(f"PyTorch  idx[:15]: {idx_py[0, :15].tolist()}")
     print(f"1-core   idx[:15]: {idx_1c[0, :15].tolist()}")
-    print(f"8c v2    idx[:15]: {idx_v2[0, :15].tolist()}")
 
     xyz_t = xyz.permute(0, 2, 1).contiguous().reshape(1, -1)
+
+    results = {}
 
     # v1 debug (SetValue)
     try:
         lib_v1 = _load_lib("libfps_host_mc_debug.so", "fps_run_mc_debug")
-        idx_v1 = run_one_debug(lib_v1, "fps_run_mc_debug", xyz_t, "v1 (SetValue)")
+        results['v1'] = run_one_debug(lib_v1, "fps_run_mc_debug", xyz_t, "v1 (SetValue)")
     except Exception as e:
         print(f"v1 debug: SKIP ({e})")
 
-    # v2 debug (DataCopy)
+    # v2 debug (DataCopy + SetValue on UB)
     try:
         lib_v2 = _load_lib("libfps_host_mc_v2_dbg.so", "fps_run_mc_v2_dbg")
-        idx_v2dbg = run_one_debug(lib_v2, "fps_run_mc_v2_dbg", xyz_t, "v2 (DataCopy)")
+        results['v2'] = run_one_debug(lib_v2, "fps_run_mc_v2_dbg", xyz_t, "v2 (DataCopy+SetValueUB)")
     except Exception as e:
         print(f"v2 debug: SKIP ({e})")
+
+    # v3 debug (pure vector Duplicate + DataCopy)
+    try:
+        lib_v3 = _load_lib("libfps_host_mc_v3_dbg.so", "fps_run_mc_v3_dbg")
+        results['v3'] = run_one_debug(lib_v3, "fps_run_mc_v3_dbg", xyz_t, "v3 (Duplicate+DataCopy)")
+    except Exception as e:
+        print(f"v3 debug: SKIP ({e})")
 
     # Final comparison
     expected = idx_py[0].cpu().numpy()
     print(f"\n=== Final Comparison ===")
     print(f"  PyTorch: {expected[:15].tolist()}")
     print(f"  1-core:  {idx_1c[0, :15].tolist()}")
-    print(f"  8c v2:   {idx_v2[0, :15].tolist()}")
+    for name, idx in results.items():
+        match = "MATCH" if np.array_equal(expected, idx) else "MISMATCH"
+        print(f"  {name}:     {idx[:15].tolist()}  ({match})")
 
 
 if __name__ == "__main__":
