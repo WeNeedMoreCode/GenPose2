@@ -18,7 +18,7 @@ constexpr int32_t BLOCKS_PER_CORE = CHUNK / BLOCK_SIZE;
 
 class KernelFpsMultiCore {
 public:
-    __aicore__ inline void Init(GM_ADDR xyz, GM_ADDR idx, GM_ADDR results, GM_ADDR syncBuf)
+    __aicore__ inline void Init(GM_ADDR xyz, GM_ADDR idx, GM_ADDR results)
     {
         coreId = AscendC::GetBlockIdx();
         pointOffset = coreId * CHUNK;
@@ -26,7 +26,6 @@ public:
         xyzGm.SetGlobalBuffer((__gm__ float *)xyz, 3 * N);
         idxGm.SetGlobalBuffer((__gm__ int32_t *)idx, NPOINTS);
         resultsGm.SetGlobalBuffer((__gm__ float *)results, NUM_CORES * 2);
-        syncGm.SetGlobalBuffer((__gm__ int32_t *)syncBuf, 1);
 
         pipe.InitBuffer(xyzBuf, 3 * N * sizeof(float));
         pipe.InitBuffer(distBuf, CHUNK * sizeof(float));
@@ -34,7 +33,6 @@ public:
         pipe.InitBuffer(tmpBuf, BLOCK_SIZE * sizeof(float));
         pipe.InitBuffer(blkBuf, BLOCK_SIZE * sizeof(float));
         pipe.InitBuffer(redBuf, BLOCKS_PER_CORE * 2 * sizeof(float));
-        pipe.InitBuffer(syncLocalBuf, sizeof(int32_t));
     }
 
     __aicore__ inline void Process()
@@ -45,7 +43,6 @@ public:
         auto tmp = tmpBuf.Get<float>();
         auto blk = blkBuf.Get<float>();
         auto red = redBuf.Get<float>();
-        auto syncLocal = syncLocalBuf.Get<int32_t>();
 
         AscendC::DataCopy(xyz, xyzGm, 3 * N);
         pipe_barrier(PIPE_V);
@@ -108,7 +105,7 @@ public:
             resultsGm.SetValue(coreId * 2 + 1, *reinterpret_cast<float *>(&localBestIdx));
 
             // Cross-core sync
-            AscendC::SyncAll<int32_t>(syncGm, syncLocal);
+            AscendC::SyncAll();
 
             // All cores: find global argmax from NUM_CORES results
             float globalBestVal = -1.0f;
@@ -147,24 +144,22 @@ private:
     AscendC::TBuf<AscendC::TPosition::VECIN> tmpBuf;
     AscendC::TBuf<AscendC::TPosition::VECIN> blkBuf;
     AscendC::TBuf<AscendC::TPosition::VECIN> redBuf;
-    AscendC::TBuf<AscendC::TPosition::VECIN> syncLocalBuf;
 
     AscendC::GlobalTensor<float> xyzGm;
     AscendC::GlobalTensor<int32_t> idxGm;
     AscendC::GlobalTensor<float> resultsGm;
-    AscendC::GlobalTensor<int32_t> syncGm;
 };
 
-extern "C" __global__ __aicore__ void fps_custom_multicore(GM_ADDR xyz, GM_ADDR idx, GM_ADDR results, GM_ADDR syncBuf)
+extern "C" __global__ __aicore__ void fps_custom_multicore(GM_ADDR xyz, GM_ADDR idx, GM_ADDR results)
 {
     KernelFpsMultiCore op;
-    op.Init(xyz, idx, results, syncBuf);
+    op.Init(xyz, idx, results);
     op.Process();
 }
 
 #ifndef ASCENDC_CPU_DEBUG
-void fps_custom_multicore_do(uint32_t blockDim, void *stream, uint8_t *xyz, uint8_t *idx, uint8_t *results, uint8_t *syncBuf)
+void fps_custom_multicore_do(uint32_t blockDim, void *stream, uint8_t *xyz, uint8_t *idx, uint8_t *results)
 {
-    fps_custom_multicore<<<blockDim, nullptr, stream>>>(xyz, idx, results, syncBuf);
+    fps_custom_multicore<<<blockDim, nullptr, stream>>>(xyz, idx, results);
 }
 #endif
