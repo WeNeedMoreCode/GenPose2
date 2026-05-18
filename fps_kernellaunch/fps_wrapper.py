@@ -151,7 +151,7 @@ def pytorch_fps(xyz, npoints):
     indices = torch.zeros(B, npoints, dtype=torch.long, device=device)
 
     for i in range(npoints):
-        centroid = xyz_t[:, :, farthest]  # [B, 3]
+        centroid = xyz_t.gather(2, farthest.reshape(B, 1, 1).expand(B, 3, 1)).squeeze(2)  # [B, 3]
         dist = torch.sum((xyz_t - centroid.unsqueeze(2)) ** 2, dim=1)  # [B, N]
         distances = torch.min(distances, dist)
         farthest = torch.argmax(distances, dim=1)  # [B]

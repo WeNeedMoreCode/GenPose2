@@ -1,8 +1,12 @@
 /**
- * AscendC SIMD FPS (Furthest Point Sampling) kernel
+ * AscendC SIMD FPS (Furthest Point Sampling) kernel — optimized
  * Input:  xyz [3*N] float32 (transposed: x[0:N], y[N:2N], z[2N:3N])
  * Output: idx [NPOINTS] int32
  * Fixed params: N=1024, NPOINTS=512, blockDim=1
+ *
+ * Optimizations vs v1:
+ *   - TBuf instead of TQue (no EnQue/DeQue overhead in inner loop)
+ *   - Block-level WholeReduceMax for argmax (vector reduction, not scalar scan)
  */
 #include "kernel_operator.h"
 
@@ -18,113 +22,100 @@ public:
         xyzGm.SetGlobalBuffer((__gm__ float *)xyz, 3 * N);
         idxGm.SetGlobalBuffer((__gm__ int32_t *)idx, NPOINTS);
 
-        pipe.InitBuffer(xyzQueue, 1, 3 * N * sizeof(float));
-        pipe.InitBuffer(distQueue, 1, N * sizeof(float));
-        pipe.InitBuffer(idxQueue, 1, NPOINTS * sizeof(int32_t));
-        pipe.InitBuffer(tmpQueue, 1, BLOCK_SIZE * sizeof(float));
-        pipe.InitBuffer(blkQueue, 1, BLOCK_SIZE * sizeof(float));
+        pipe.InitBuffer(xyzBuf, 3 * N * sizeof(float));
+        pipe.InitBuffer(distBuf, N * sizeof(float));
+        pipe.InitBuffer(idxBuf, NPOINTS * sizeof(int32_t));
+        pipe.InitBuffer(tmpBuf, BLOCK_SIZE * sizeof(float));
+        pipe.InitBuffer(blkBuf, BLOCK_SIZE * sizeof(float));
+        pipe.InitBuffer(redBuf, BLOCK_SIZE * sizeof(float));
     }
 
     __aicore__ inline void Process()
     {
-        // Load xyz from GM
-        auto xyz = xyzQueue.AllocTensor<float>();
+        auto xyz = xyzBuf.Get<float>();
+        auto dist = distBuf.Get<float>();
+        auto idxLocal = idxBuf.Get<int32_t>();
+        auto tmp = tmpBuf.Get<float>();
+        auto blk = blkBuf.Get<float>();
+        auto red = redBuf.Get<float>();
+
         AscendC::DataCopy(xyz, xyzGm, 3 * N);
-        xyzQueue.EnQue(xyz);
-
-        // Init distance
-        auto dist = distQueue.AllocTensor<float>();
+        pipe_barrier(PIPE_V);
         AscendC::Duplicate(dist, 1e10f, N);
-        distQueue.EnQue(dist);
-
-        // Init idx to zeros (idx[0] = 0)
-        auto idxLocal = idxQueue.AllocTensor<int32_t>();
         AscendC::Duplicate(idxLocal, (int32_t)0, NPOINTS);
-        idxQueue.EnQue(idxLocal);
+        pipe_barrier(PIPE_V);
 
         int32_t old = 0;
 
         for (int32_t j = 1; j < NPOINTS; j++) {
-            // Read centroid (sync via DeQue)
-            xyz = xyzQueue.DeQue<float>();
             float x1 = xyz.GetValue(old);
             float y1 = xyz.GetValue(N + old);
             float z1 = xyz.GetValue(2 * N + old);
-            xyzQueue.EnQue(xyz);
 
-            // Distance computation in blocks
             for (int32_t b = 0; b < NUM_BLOCKS; b++) {
                 int32_t base = b * BLOCK_SIZE;
 
-                auto tmp = tmpQueue.AllocTensor<float>();
-                auto blk = blkQueue.AllocTensor<float>();
-                xyz = xyzQueue.DeQue<float>();
-
-                // dx^2
                 AscendC::Duplicate(tmp, x1, BLOCK_SIZE);
                 AscendC::Sub(blk, xyz[base], tmp, BLOCK_SIZE);
                 AscendC::Mul(blk, blk, blk, BLOCK_SIZE);
 
-                // += dy^2
                 AscendC::Duplicate(tmp, y1, BLOCK_SIZE);
                 AscendC::Sub(tmp, xyz[N + base], tmp, BLOCK_SIZE);
                 AscendC::Mul(tmp, tmp, tmp, BLOCK_SIZE);
                 AscendC::Add(blk, blk, tmp, BLOCK_SIZE);
 
-                // += dz^2
                 AscendC::Duplicate(tmp, z1, BLOCK_SIZE);
                 AscendC::Sub(tmp, xyz[2 * N + base], tmp, BLOCK_SIZE);
                 AscendC::Mul(tmp, tmp, tmp, BLOCK_SIZE);
                 AscendC::Add(blk, blk, tmp, BLOCK_SIZE);
 
-                xyzQueue.EnQue(xyz);
-
-                // min update (sync via DeQue)
-                dist = distQueue.DeQue<float>();
                 AscendC::Min(dist[base], dist[base], blk, BLOCK_SIZE);
-                distQueue.EnQue(dist);
-
-                // Release temp buffers
-                tmpQueue.EnQue(tmp);
-                tmpQueue.DeQue<float>();
-                tmpQueue.FreeTensor(tmp);
-
-                blkQueue.EnQue(blk);
-                blkQueue.DeQue<float>();
-                blkQueue.FreeTensor(blk);
             }
+            pipe_barrier(PIPE_V);
 
-            // Argmax (sync via DeQue ensures all Min ops complete)
-            dist = distQueue.DeQue<float>();
+            // Block-level argmax: find per-block max, then scan 16 block maxes
             float bestVal = -1.0f;
-            int32_t bestIdx = 0;
-            for (int32_t k = 0; k < N; k++) {
-                float val = dist.GetValue(k);
+            int32_t bestBlock = 0;
+            for (int32_t b = 0; b < NUM_BLOCKS; b++) {
+                int32_t base = b * BLOCK_SIZE;
+                AscendC::WholeReduceMax(red, dist[base], BLOCK_SIZE, 1, false);
+                pipe_barrier(PIPE_V);
+                float val = red.GetValue(0);
                 if (val > bestVal) {
                     bestVal = val;
-                    bestIdx = k;
+                    bestBlock = b;
                 }
             }
-            distQueue.EnQue(dist);
 
-            // Write idx[j]
-            idxLocal = idxQueue.DeQue<int32_t>();
+            // Scan the winning block to find the exact index
+            int32_t bestIdx = 0;
+            float blockBestVal = -1.0f;
+            int32_t blockBase = bestBlock * BLOCK_SIZE;
+            for (int32_t k = 0; k < BLOCK_SIZE; k++) {
+                float val = dist.GetValue(blockBase + k);
+                if (val > blockBestVal) {
+                    blockBestVal = val;
+                    bestIdx = blockBase + k;
+                }
+            }
+
             idxLocal.SetValue(j, bestIdx);
-            idxQueue.EnQue(idxLocal);
-
             old = bestIdx;
         }
 
-        // Write back idx to GM
-        idxLocal = idxQueue.DeQue<int32_t>();
+        pipe_barrier(PIPE_V);
         AscendC::DataCopy(idxGm, idxLocal, NPOINTS);
-        idxQueue.FreeTensor(idxLocal);
+        pipe_barrier(PIPE_V);
     }
 
 private:
     AscendC::TPipe pipe;
-    AscendC::TQue<AscendC::TPosition::VECIN, 1> xyzQueue, distQueue, tmpQueue, blkQueue;
-    AscendC::TQue<AscendC::TPosition::VECOUT, 1> idxQueue;
+    AscendC::TBuf<AscendC::TPosition::VECIN> xyzBuf;
+    AscendC::TBuf<AscendC::TPosition::VECIN> distBuf;
+    AscendC::TBuf<AscendC::TPosition::VECOUT> idxBuf;
+    AscendC::TBuf<AscendC::TPosition::VECIN> tmpBuf;
+    AscendC::TBuf<AscendC::TPosition::VECIN> blkBuf;
+    AscendC::TBuf<AscendC::TPosition::VECIN> redBuf;
     AscendC::GlobalTensor<float> xyzGm;
     AscendC::GlobalTensor<int32_t> idxGm;
 };
