@@ -1,7 +1,6 @@
 """
-Debug test for 8-core FPS kernel.
-Compares intermediate values between 1-core and 8-core to identify where
-the precision mismatch occurs.
+Debug test for 8-core FPS kernels (v1 and v2).
+Compares intermediate values to identify where precision mismatch occurs.
 """
 import ctypes
 import os
@@ -11,110 +10,123 @@ import torch_npu  # noqa: F401
 import pointnet2_ops
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# --- Load debug library ---
-lib_path = os.path.join(SCRIPT_DIR, "out", "lib", "libfps_host_mc_debug.so")
-if not os.path.exists(lib_path):
-    lib_path = os.path.join(SCRIPT_DIR, "libfps_host_mc_debug.so")
-if not os.path.exists(lib_path):
-    raise FileNotFoundError(f"libfps_host_mc_debug.so not found. Build first.")
-
-lib_dbg = ctypes.CDLL(lib_path)
-lib_dbg.fps_run_mc_debug.restype = ctypes.c_int
-lib_dbg.fps_run_mc_debug.argtypes = [
-    ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_int
-]
-
-# --- Also load 1-core lib for comparison ---
-from fps_wrapper import FurthestPointSamplingAscendC
-fps_1c = FurthestPointSamplingAscendC()
-
-# --- Also load 8-core lib ---
-from fps_wrapper import FurthestPointSamplingMultiCore
-fps_8c = FurthestPointSamplingMultiCore()
-
 NUM_CORES = 8
 DEBUG_ITERS = 3
-DEBUG_SIZE = NUM_CORES * 4 * DEBUG_ITERS  # 96 floats
-
+DEBUG_SIZE = NUM_CORES * 4 * DEBUG_ITERS
 N = 1024
 NPOINTS = 512
 
-def run_debug():
-    # Use same random data for all tests
-    torch.manual_seed(42)
-    xyz = torch.randn(1, N, 3, device='npu:0', dtype=torch.float32)
 
-    # 1-core result (known correct)
-    idx_1c = fps_1c(xyz, NPOINTS)
-    print(f"1-core idx[:15]: {idx_1c[0, :15].tolist()}")
+def _load_lib(name, func_name):
+    lib_path = os.path.join(SCRIPT_DIR, "out", "lib", name)
+    if not os.path.exists(lib_path):
+        lib_path = os.path.join(SCRIPT_DIR, name)
+    if not os.path.exists(lib_path):
+        raise FileNotFoundError(f"{name} not found. Build first.")
+    lib = ctypes.CDLL(lib_path)
+    lib[func_name].restype = ctypes.c_int
+    lib[func_name].argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_int
+    ]
+    return lib
 
-    # 8-core result (known buggy)
-    idx_8c = fps_8c(xyz, NPOINTS)
-    print(f"8-core idx[:15]: {idx_8c[0, :15].tolist()}")
 
-    # PyTorch baseline
-    idx_py = pointnet2_ops._furthest_point_sampling(xyz, NPOINTS)
-    print(f"PyTorch idx[:15]: {idx_py[0, :15].tolist()}")
+def parse_debug(debug_host):
+    vals = np.array([debug_host[i] for i in range(DEBUG_SIZE)], dtype=np.float32)
+    results = []
+    for iteration in range(DEBUG_ITERS):
+        iter_data = []
+        for core in range(NUM_CORES):
+            off = core * 4 * DEBUG_ITERS + iteration * 4
+            local_val = vals[off + 0]
+            local_idx = int(np.frombuffer(
+                np.array([vals[off + 1]], dtype=np.float32).tobytes(), dtype=np.uint32)[0])
+            global_val = vals[off + 2]
+            global_idx = int(np.frombuffer(
+                np.array([vals[off + 3]], dtype=np.float32).tobytes(), dtype=np.uint32)[0])
+            iter_data.append({
+                'local_val': local_val, 'local_idx': local_idx,
+                'global_val': global_val, 'global_idx': global_idx,
+            })
+        results.append(iter_data)
+    return results
 
-    # Run debug kernel
-    xyz_t = xyz.permute(0, 2, 1).contiguous().reshape(1, -1)
+
+def print_debug(label, debug_data):
+    print(f"\n=== {label}: Per-core intermediate values ===")
+    for it, iter_data in enumerate(debug_data):
+        print(f"\n--- Iteration {it + 1} ---")
+        for core, d in enumerate(iter_data):
+            print(f"  Core {core}: local(val={d['local_val']:.4f}, idx={d['local_idx']})"
+                  f"  global(val={d['global_val']:.4f}, idx={d['global_idx']})")
+
+        global_vals = [d['global_val'] for d in iter_data]
+        global_idxs = [d['global_idx'] for d in iter_data]
+        same_val = all(v == global_vals[0] for v in global_vals)
+        same_idx = all(i == global_idxs[0] for i in global_idxs)
+        if same_val and same_idx:
+            print(f"  All cores AGREE on global: val={global_vals[0]:.4f}, idx={global_idxs[0]}")
+        else:
+            print(f"  WARNING: Cores DISAGREE!")
+            print(f"    vals: {[f'{v:.4f}' for v in global_vals]}")
+            print(f"    idxs: {global_idxs}")
+
+
+def run_one_debug(lib, func_name, xyz_t, label):
     idx_dbg = torch.zeros(1, NPOINTS, dtype=torch.int32, device='npu:0')
-
     debug_host = (ctypes.c_float * DEBUG_SIZE)()
-
     torch.npu.synchronize()
-    ret = lib_dbg.fps_run_mc_debug(
+    ret = lib[func_name](
         ctypes.c_void_p(xyz_t[0].data_ptr()),
         ctypes.c_void_p(idx_dbg[0].data_ptr()),
         debug_host,
         DEBUG_SIZE,
     )
-    assert ret == 0, f"fps_run_mc_debug failed: {ret}"
+    assert ret == 0, f"{func_name} failed: {ret}"
+    debug_data = parse_debug(debug_host)
+    idx_np = idx_dbg[0].cpu().numpy()
+    print_debug(label, debug_data)
+    return idx_np
 
-    # Copy debug output to device for comparison
-    idx_dbg_np = idx_dbg[0].cpu().numpy()
-    print(f"\nDebug kernel idx[:15]: {idx_dbg_np[:15].tolist()}")
 
-    # Parse debug buffer
-    # Layout: [NUM_CORES * 4 * DEBUG_ITERS]
-    # For each (core, iter): [localBestVal, localBestIdx, globalBestVal, globalBestIdx]
-    print(f"\n=== Debug: Per-core intermediate values (first {DEBUG_ITERS} iterations) ===")
-    vals = np.array([debug_host[i] for i in range(DEBUG_SIZE)], dtype=np.float32)
+def run_debug():
+    torch.manual_seed(42)
+    xyz = torch.randn(1, N, 3, device='npu:0', dtype=torch.float32)
 
-    for iteration in range(DEBUG_ITERS):
-        print(f"\n--- Iteration {iteration + 1} (j={iteration + 1}) ---")
-        for core in range(NUM_CORES):
-            off = core * 4 * DEBUG_ITERS + iteration * 4
-            local_val = vals[off + 0]
-            local_idx_raw = vals[off + 1]
-            local_idx = int(np.frombuffer(np.array([local_idx_raw], dtype=np.float32).tobytes(), dtype=np.uint32)[0])
-            global_val = vals[off + 2]
-            global_idx_raw = vals[off + 3]
-            global_idx = int(np.frombuffer(np.array([global_idx_raw], dtype=np.float32).tobytes(), dtype=np.uint32)[0])
-            print(f"  Core {core}: local(val={local_val:.4f}, idx={local_idx})"
-                  f"  global(val={global_val:.4f}, idx={global_idx})")
+    from fps_wrapper import FurthestPointSamplingAscendC, FurthestPointSamplingMultiCoreV2
+    fps_1c = FurthestPointSamplingAscendC()
+    fps_v2 = FurthestPointSamplingMultiCoreV2()
 
-        # Check: all cores should see the same global result after SyncAll
-        global_vals = []
-        global_idxs = []
-        for core in range(NUM_CORES):
-            off = core * 4 * DEBUG_ITERS + iteration * 4
-            global_vals.append(vals[off + 2])
-            raw = vals[off + 3]
-            global_idxs.append(int(np.frombuffer(np.array([raw], dtype=np.float32).tobytes(), dtype=np.uint32)[0]))
+    idx_1c = fps_1c(xyz, NPOINTS)
+    idx_v2 = fps_v2(xyz, NPOINTS)
+    idx_py = pointnet2_ops._furthest_point_sampling(xyz, NPOINTS)
 
-        all_same_val = all(v == global_vals[0] for v in global_vals)
-        all_same_idx = all(i == global_idxs[0] for i in global_idxs)
-        print(f"  Consistency: globalVals same={all_same_val}, globalIdxs same={all_same_idx}")
-        if not all_same_val or not all_same_idx:
-            print(f"    WARNING: Cores disagree! vals={global_vals}, idxs={global_idxs}")
+    print(f"PyTorch  idx[:15]: {idx_py[0, :15].tolist()}")
+    print(f"1-core   idx[:15]: {idx_1c[0, :15].tolist()}")
+    print(f"8c v2    idx[:15]: {idx_v2[0, :15].tolist()}")
 
-    # Compare with expected
-    print(f"\n=== Expected vs Actual ===")
+    xyz_t = xyz.permute(0, 2, 1).contiguous().reshape(1, -1)
+
+    # v1 debug (SetValue)
+    try:
+        lib_v1 = _load_lib("libfps_host_mc_debug.so", "fps_run_mc_debug")
+        idx_v1 = run_one_debug(lib_v1, "fps_run_mc_debug", xyz_t, "v1 (SetValue)")
+    except Exception as e:
+        print(f"v1 debug: SKIP ({e})")
+
+    # v2 debug (DataCopy)
+    try:
+        lib_v2 = _load_lib("libfps_host_mc_v2_dbg.so", "fps_run_mc_v2_dbg")
+        idx_v2dbg = run_one_debug(lib_v2, "fps_run_mc_v2_dbg", xyz_t, "v2 (DataCopy)")
+    except Exception as e:
+        print(f"v2 debug: SKIP ({e})")
+
+    # Final comparison
     expected = idx_py[0].cpu().numpy()
-    for i in range(min(15, DEBUG_ITERS)):
-        print(f"  j={i}: expected={expected[i]}, debug_kernel={idx_dbg_np[i]}")
+    print(f"\n=== Final Comparison ===")
+    print(f"  PyTorch: {expected[:15].tolist()}")
+    print(f"  1-core:  {idx_1c[0, :15].tolist()}")
+    print(f"  8c v2:   {idx_v2[0, :15].tolist()}")
 
 
 if __name__ == "__main__":

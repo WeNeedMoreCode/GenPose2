@@ -17,6 +17,7 @@ file(GLOB KERNEL_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/fps_custom_multicore.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/fps_custom_multicore_debug.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/fps_custom_multicore_v2.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/fps_custom_multicore_v2_debug.cpp
 )
 
 if("${RUN_MODE}" STREQUAL "cpu")
@@ -88,6 +89,17 @@ if("${RUN_MODE}" STREQUAL "npu" OR "${RUN_MODE}" STREQUAL "sim")
         ascendc_kernels_${RUN_MODE}
     )
     install(TARGETS fps_host_multicore_v2
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    )
+
+    # Multi-core v2 debug host wrapper
+    add_library(fps_host_mc_v2_dbg SHARED ${CMAKE_CURRENT_SOURCE_DIR}/fps_host_mc_v2_debug.cpp)
+    target_compile_options(fps_host_mc_v2_dbg PRIVATE -O2 -std=c++17 -D_GLIBCXX_USE_CXX11_ABI=0)
+    target_link_libraries(fps_host_mc_v2_dbg PRIVATE
+        host_intf_pub
+        ascendc_kernels_${RUN_MODE}
+    )
+    install(TARGETS fps_host_mc_v2_dbg
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     )
 endif()
