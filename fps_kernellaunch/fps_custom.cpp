@@ -73,18 +73,22 @@ public:
             }
             pipe_barrier(PIPE_V);
 
-            // Block-level argmax: WholeReduceMax returns [value, index] per block
+            // Batched argmax: single WholeReduceMax with repeatTime=16
+            // Each repeat processes one 64-element block, producing [value, index]
+            // dst layout: [val0, idx0, val1, idx1, ..., val15, idx15]
+            AscendC::WholeReduceMax<float>(red, dist, 64, NUM_BLOCKS, 1, 1, 8);
+            pipe_barrier(PIPE_V);
+
+            // Scan 16 block results to find global max
             float bestVal = -1.0f;
             int32_t bestIdx = 0;
             for (int32_t b = 0; b < NUM_BLOCKS; b++) {
-                int32_t base = b * BLOCK_SIZE;
-                AscendC::WholeReduceMax<float>(red, dist[base], 64, 1, 1, 1, 8);
-                pipe_barrier(PIPE_V);
-                float val = red.GetValue(0);
+                float val = red.GetValue(b * 2);
                 if (val > bestVal) {
                     bestVal = val;
-                    float idxFloat = red.GetValue(1);
-                    bestIdx = base + *reinterpret_cast<uint32_t *>(&idxFloat);
+                    float idxFloat = red.GetValue(b * 2 + 1);
+                    int32_t idxInBlock = *reinterpret_cast<uint32_t *>(&idxFloat);
+                    bestIdx = b * BLOCK_SIZE + idxInBlock;
                 }
             }
 
