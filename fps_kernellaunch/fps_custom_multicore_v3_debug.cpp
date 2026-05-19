@@ -15,19 +15,23 @@ public:
     __aicore__ inline void Init(GM_ADDR xyz, GM_ADDR idx, GM_ADDR results, GM_ADDR debug)
     {
         coreId = AscendC::GetBlockIdx();
-        debugGm.SetGlobalBuffer((__gm__ float *)debug, NUM_CORES);
+        // debug layout: [alive_marker(8), dup_result(8)]
+        debugGm.SetGlobalBuffer((__gm__ float *)debug, NUM_CORES * 2);
         pipe.InitBuffer(distBuf, CHUNK * sizeof(float));
     }
 
     __aicore__ inline void Process()
     {
+        // CP0: "I'm alive" marker — if host sees this but not dup_result, core ran but Duplicate failed
+        debugGm.SetValue(coreId, -1.0f);
+
         auto dist = distBuf.Get<float>();
 
         AscendC::Duplicate(dist, 1e10f, CHUNK);
         pipe_barrier(PIPE_V);
 
         float val = dist.GetValue(0);
-        debugGm.SetValue(coreId, val);
+        debugGm.SetValue(NUM_CORES + coreId, val);
     }
 
 private:

@@ -48,20 +48,34 @@ def run_minimal_test():
         )
         assert ret == 0
 
-        print("=== Minimal Duplicate Test ===")
-        print("Each core: Duplicate(dist, 1e10, 128) → GetValue(0) → SetValue(debugGm)")
+        print("=== Minimal Duplicate Test (v2: alive marker) ===")
+        print("Each core: SetValue(alive=-1) → Duplicate(dist, 1e10) → GetValue → SetValue")
+        print()
+        any_alive_no_dup = False
         all_ok = True
         for c in range(NUM_CORES):
-            val = debug_host[c]
-            status = "OK" if val > 1e9 else "FAIL"
-            if status == "FAIL":
+            alive = debug_host[c]
+            dup_val = debug_host[NUM_CORES + c]
+            alive_ok = alive == -1.0
+            dup_ok = dup_val > 1e9
+            if not dup_ok:
                 all_ok = False
-            print(f"  Core {c}: {val:.1f} ({status})")
 
+            alive_str = "ALIVE" if alive_ok else "DEAD"
+            dup_str = "OK" if dup_ok else "FAIL"
+
+            if alive_ok and not dup_ok:
+                any_alive_no_dup = True
+
+            print(f"  Core {c}: alive={alive:.1f}({alive_str})  dup={dup_val:.1f}({dup_str})")
+
+        print()
         if all_ok:
-            print("\nAll cores OK — Duplicate works in isolation, problem is buffer interaction")
+            print("All cores OK — basic Duplicate works, problem is elsewhere")
+        elif any_alive_no_dup:
+            print("Core ran (alive=-1) but Duplicate result wrong → scalar/vector sync issue")
         else:
-            print("\nSome cores FAIL — AscendC SPMD Duplicate has fundamental issue")
+            print("Core didn't run (alive=0) → SPMD core dispatch or SetValue issue")
 
     except Exception as e:
         print(f"Test failed: {e}")
