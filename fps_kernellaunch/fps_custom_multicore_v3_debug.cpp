@@ -17,7 +17,15 @@ public:
         coreId = AscendC::GetBlockIdx();
         // debug layout: [alive_marker(8), dup_result(8)]
         debugGm.SetGlobalBuffer((__gm__ float *)debug, NUM_CORES * 2);
+
+        // Allocate ALL buffers like full kernel (to test if buffer count affects core dispatch)
+        pipe.InitBuffer(xyzBuf, 3 * N * sizeof(float));
         pipe.InitBuffer(distBuf, CHUNK * sizeof(float));
+        pipe.InitBuffer(idxBuf, NPOINTS * sizeof(int32_t));
+        pipe.InitBuffer(tmpBuf, BLOCK_SIZE * sizeof(float));
+        pipe.InitBuffer(blkBuf, BLOCK_SIZE * sizeof(float));
+        pipe.InitBuffer(redBuf, BLOCKS_PER_CORE * 2 * sizeof(float));
+        pipe.InitBuffer(inBuf, NUM_CORES * CHUNK * sizeof(float));
     }
 
     __aicore__ inline void Process()
@@ -37,7 +45,13 @@ public:
 private:
     int32_t coreId;
     AscendC::TPipe pipe;
+    AscendC::TBuf<AscendC::TPosition::VECIN> xyzBuf;
     AscendC::TBuf<AscendC::TPosition::VECIN> distBuf;
+    AscendC::TBuf<AscendC::TPosition::VECOUT> idxBuf;
+    AscendC::TBuf<AscendC::TPosition::VECIN> tmpBuf;
+    AscendC::TBuf<AscendC::TPosition::VECIN> blkBuf;
+    AscendC::TBuf<AscendC::TPosition::VECIN> redBuf;
+    AscendC::TBuf<AscendC::TPosition::VECIN> inBuf;
     AscendC::GlobalTensor<float> debugGm;
 };
 
