@@ -1,6 +1,6 @@
 """
-Minimal test: verify 8-core aclrtlaunch dispatch and SetValue.
-Each core should write [1e10, 3.14, -1.0, 42.0] to its own GM offset.
+Minimal test: each core does Duplicate(coreVal, 8) + DataCopy to GM.
+Core 0 → 100.0, Core 1 → 200.0, ..., Core 7 → 800.0
 """
 import ctypes
 import os
@@ -8,10 +8,8 @@ import numpy as np
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 NUM_CORES = 8
-FIELDS_PER_CORE = 4
-DEBUG_SIZE = NUM_CORES * FIELDS_PER_CORE
-
-EXPECTED = [1e10, 3.14, -1.0, 42.0]
+PER_CORE = 8
+DEBUG_SIZE = NUM_CORES * PER_CORE
 
 
 def run_minimal():
@@ -31,13 +29,14 @@ def run_minimal():
     vals = np.array([debug_host[i] for i in range(DEBUG_SIZE)], dtype=np.float32)
     all_ok = True
     for core in range(NUM_CORES):
-        off = core * FIELDS_PER_CORE
-        actual = vals[off:off + FIELDS_PER_CORE].tolist()
-        match = all(np.isclose(a, e, rtol=1e-3) for a, e in zip(actual, EXPECTED))
+        off = core * PER_CORE
+        expected = (core + 1) * 100.0
+        actual = vals[off:off + PER_CORE]
+        match = all(np.isclose(a, expected, rtol=1e-3) for a in actual)
         status = "OK" if match else "FAIL"
         if not match:
             all_ok = False
-        print(f"  Core {core}: {actual}  ({status})")
+        print(f"  Core {core}: {actual.tolist()[:4]}...  expected={expected:.0f}  ({status})")
 
     print(f"\nResult: {'ALL PASS' if all_ok else 'SOME FAILED'}")
     return all_ok

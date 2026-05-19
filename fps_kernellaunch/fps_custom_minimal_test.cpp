@@ -1,32 +1,37 @@
 /**
- * Minimal multi-core test: each core writes 4 known constants to GM.
- * No TBuf, no TPipe, no vector ops — only SetValue (scalar GM write).
- * Purpose: verify aclrtlaunch dispatches all 8 cores and SetValue works.
+ * Minimal multi-core test: Duplicate + DataCopy (standard AscendC pattern).
+ * Each core fills a UB buffer with its own value, then DataCopy to GM.
+ * Core 0 → 100.0, Core 1 → 200.0, ..., Core 7 → 800.0
  */
 #include "kernel_operator.h"
 
 constexpr int32_t NUM_CORES = 8;
-constexpr int32_t FIELDS_PER_CORE = 4;
-constexpr int32_t DEBUG_SIZE = NUM_CORES * FIELDS_PER_CORE;
+constexpr int32_t PER_CORE = 8;
 
 class KernelMinimalTest {
 public:
     __aicore__ inline void Init(GM_ADDR debug)
     {
-        debugGm.SetGlobalBuffer((__gm__ float *)debug, DEBUG_SIZE);
+        debugGm.SetGlobalBuffer((__gm__ float *)debug, NUM_CORES * PER_CORE);
+        pipe.InitBuffer(buf, PER_CORE * sizeof(float));
     }
 
     __aicore__ inline void Process()
     {
         int32_t coreId = AscendC::GetBlockIdx();
-        int32_t off = coreId * FIELDS_PER_CORE;
-        debugGm.SetValue(off + 0, 1e10f);
-        debugGm.SetValue(off + 1, 3.14f);
-        debugGm.SetValue(off + 2, -1.0f);
-        debugGm.SetValue(off + 3, 42.0f);
+        auto local = buf.Get<float>();
+
+        float coreVal = (coreId + 1) * 100.0f;
+        AscendC::Duplicate(local, coreVal, PER_CORE);
+        pipe_barrier(PIPE_V);
+
+        AscendC::DataCopy(debugGm[coreId * PER_CORE], local, PER_CORE);
+        pipe_barrier(PIPE_V);
     }
 
 private:
+    AscendC::TPipe pipe;
+    AscendC::TBuf<AscendC::TPosition::VECIN> buf;
     AscendC::GlobalTensor<float> debugGm;
 };
 
