@@ -20,6 +20,7 @@ file(GLOB KERNEL_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/fps_custom_multicore_v2_debug.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/fps_custom_multicore_v3.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/fps_custom_multicore_v3_debug.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/fps_custom_minimal_test.cpp
 )
 
 if("${RUN_MODE}" STREQUAL "cpu")
@@ -126,6 +127,19 @@ if("${RUN_MODE}" STREQUAL "npu" OR "${RUN_MODE}" STREQUAL "sim")
         ascendc_kernels_${RUN_MODE}
     )
     install(TARGETS fps_host_mc_v3_dbg
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    )
+
+    # Minimal multi-core SetValue test
+    add_library(fps_host_minimal_test SHARED ${CMAKE_CURRENT_SOURCE_DIR}/fps_host_minimal_test.cpp)
+    target_compile_options(fps_host_minimal_test PRIVATE -O2 -std=c++17 -D_GLIBCXX_USE_CXX11_ABI=0)
+    target_include_directories(fps_host_minimal_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/out/include/ascendc_kernels_npu)
+    target_link_libraries(fps_host_minimal_test PRIVATE
+        host_intf_pub
+        ascendc_kernels_${RUN_MODE}
+    )
+    install(TARGETS fps_host_minimal_test
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     )
 endif()
