@@ -13,7 +13,7 @@ DEBUG_SIZE = NUM_CORES * PER_CORE
 
 
 def run_minimal():
-    lib_path = os.path.join(SCRIPT_DIR, "out", "lib", "libfps_host_minimal_test.so")
+    lib_path = os.path.join(SCRIPT_DIR, "out", "lib", "libfps_host_mc_v3_dbg.so")
     if not os.path.exists(lib_path):
         raise FileNotFoundError(f"{lib_path} not found. Build first.")
     lib = ctypes.CDLL(lib_path)
