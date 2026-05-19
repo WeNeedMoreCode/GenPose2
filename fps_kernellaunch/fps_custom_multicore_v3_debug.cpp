@@ -1,10 +1,14 @@
 /**
  * Debug version of v3 multi-core FPS kernel.
- * 6 checkpoints per (core, iter): dup_ok, cksum, reduceVal, reduceIdx, localBestVal, localBestIdx
- * dup_ok:  dist[0] after Duplicate init (~1e10 = OK, 0 = FAIL)
- * cksum:   sum of dist[0..3] after distance update (>0 = OK, 0 = FAIL)
- * reduceVal/Idx: WholeReduceMax block-0 result
- * localBestVal/Idx: scalar scan result
+ * 8 checkpoints per (core, iter):
+ *   CP1: dist_init    — dist[0] right after Duplicate(1e10), should be ~1e10
+ *   CP2: dist_post    — dist[0] after distance update, before reduce
+ *   CP3: cksum         — dist[0..3] sum after distance update
+ *   CP4: red0_val      — WholeReduceMax block-0 value
+ *   CP5: red0_idx      — WholeReduceMax block-0 index
+ *   CP6: red1_val      — WholeReduceMax block-1 value
+ *   CP7: red1_idx      — WholeReduceMax block-1 index
+ *   CP8: localBestVal  — scalar scan result
  */
 #include "kernel_operator.h"
 
@@ -15,7 +19,7 @@ constexpr int32_t NUM_CORES = 8;
 constexpr int32_t CHUNK = N / NUM_CORES;
 constexpr int32_t BLOCKS_PER_CORE = CHUNK / BLOCK_SIZE;
 constexpr int32_t DEBUG_ITERS = 3;
-constexpr int32_t DIAG_FIELDS = 6;
+constexpr int32_t DIAG_FIELDS = 8;
 
 class KernelFpsMultiCoreV3Debug {
 public:
@@ -57,6 +61,9 @@ public:
         }
         pipe_barrier(PIPE_V);
 
+        // CP1: verify Duplicate worked — dist[0] should be ~1e10
+        float distInitVal = dist.GetValue(0);
+
         int32_t old = 0;
 
         for (int32_t j = 1; j < NPOINTS; j++) {
@@ -86,8 +93,18 @@ public:
             }
             pipe_barrier(PIPE_V);
 
+            // CP2/CP3: sample dist BEFORE reduce (reduce may clobber dist)
+            float distPostVal = dist.GetValue(0);
+            float cksum = dist.GetValue(0) + dist.GetValue(1) + dist.GetValue(2) + dist.GetValue(3);
+
             AscendC::WholeReduceMax<float>(red, dist, 64, BLOCKS_PER_CORE, 1, 1, 8);
             pipe_barrier(PIPE_V);
+
+            // CP4-7: sample all reduce results
+            float red0Val = red.GetValue(0);
+            float red0Idx = red.GetValue(1);
+            float red1Val = red.GetValue(2);
+            float red1Idx = red.GetValue(3);
 
             float localBestVal = -1.0f;
             int32_t localBestIdx = 0;
@@ -101,22 +118,17 @@ public:
                 }
             }
 
-            // Diagnostics
+            // Write diagnostics (j=1 only for init check, j<=3 for full diag)
             if (j <= DEBUG_ITERS) {
                 int32_t dOff = coreId * DIAG_FIELDS * DEBUG_ITERS + (j - 1) * DIAG_FIELDS;
-                // 1) dist[0] after init+update (should be valid distance, not 0)
-                debugGm.SetValue(dOff + 0, dist.GetValue(0));
-                // 2) checksum of dist[0..3]
-                float cksum = dist.GetValue(0) + dist.GetValue(1) + dist.GetValue(2) + dist.GetValue(3);
-                debugGm.SetValue(dOff + 1, cksum);
-                // 3) reduce block-0 val
-                debugGm.SetValue(dOff + 2, red.GetValue(0));
-                // 4) reduce block-0 idx
-                debugGm.SetValue(dOff + 3, red.GetValue(1));
-                // 5) localBestVal
-                debugGm.SetValue(dOff + 4, localBestVal);
-                // 6) localBestIdx
-                debugGm.SetValue(dOff + 5, *reinterpret_cast<float *>(&localBestIdx));
+                debugGm.SetValue(dOff + 0, (j == 1) ? distInitVal : distPostVal); // CP1 or CP2
+                debugGm.SetValue(dOff + 1, distPostVal);   // CP2
+                debugGm.SetValue(dOff + 2, cksum);          // CP3
+                debugGm.SetValue(dOff + 3, red0Val);        // CP4
+                debugGm.SetValue(dOff + 4, red0Idx);        // CP5
+                debugGm.SetValue(dOff + 5, red1Val);        // CP6
+                debugGm.SetValue(dOff + 6, red1Idx);        // CP7
+                debugGm.SetValue(dOff + 7, localBestVal);   // CP8
             }
 
             // Encode local result into dist[0..1] using Duplicate (vector op)

@@ -12,7 +12,7 @@ import pointnet2_ops
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 NUM_CORES = 8
 DEBUG_ITERS = 3
-DIAG_FIELDS = 6
+DIAG_FIELDS = 8
 DEBUG_SIZE = NUM_CORES * DIAG_FIELDS * DEBUG_ITERS
 N = 1024
 NPOINTS = 512
@@ -37,7 +37,7 @@ def float_to_idx(f):
 
 
 def parse_debug_v3(debug_host):
-    """Parse v3 6-field diagnostic: dup_ok, cksum, reduceVal, reduceIdx, localBestVal, localBestIdx"""
+    """Parse v3 8-field diagnostic: distInit, distPost, cksum, red0Val, red0Idx, red1Val, red1Idx, localBestVal"""
     vals = np.array([debug_host[i] for i in range(DEBUG_SIZE)], dtype=np.float32)
     results = []
     for it in range(DEBUG_ITERS):
@@ -45,12 +45,14 @@ def parse_debug_v3(debug_host):
         for core in range(NUM_CORES):
             off = core * DIAG_FIELDS * DEBUG_ITERS + it * DIAG_FIELDS
             iter_data.append({
-                'dist0': vals[off + 0],
-                'cksum': vals[off + 1],
-                'reduce_val': vals[off + 2],
-                'reduce_idx': float_to_idx(vals[off + 3]),
-                'local_val': vals[off + 4],
-                'local_idx': float_to_idx(vals[off + 5]),
+                'dist_init': vals[off + 0],
+                'dist_post': vals[off + 1],
+                'cksum': vals[off + 2],
+                'red0_val': vals[off + 3],
+                'red0_idx': float_to_idx(vals[off + 4]),
+                'red1_val': vals[off + 5],
+                'red1_idx': float_to_idx(vals[off + 6]),
+                'local_val': vals[off + 7],
             })
         results.append(iter_data)
     return results
@@ -60,12 +62,14 @@ def print_diag_v3(debug_data):
     for it, iter_data in enumerate(debug_data):
         print(f"\n--- Iteration {it + 1} ---")
         for core, d in enumerate(iter_data):
-            dup_ok = "OK" if d['dist0'] > 1e9 or d['dist0'] > 0 else "ZERO!"
-            ck_ok = "OK" if d['cksum'] > 0 else "ZERO!"
-            print(f"  Core {core}: dist0={d['dist0']:.4f}({dup_ok})"
-                  f"  cksum={d['cksum']:.4f}({ck_ok})"
-                  f"  reduce(val={d['reduce_val']:.4f},idx={d['reduce_idx']})"
-                  f"  local(val={d['local_val']:.4f},idx={d['local_idx']})")
+            init_ok = "OK" if d['dist_init'] > 1e9 else "FAIL"
+            post_ok = "OK" if d['dist_post'] > 0 or d['cksum'] > 0 else "ZERO"
+            print(f"  Core {core}: init={d['dist_init']:.1f}({init_ok})"
+                  f"  post={d['dist_post']:.4f}({post_ok})"
+                  f"  cksum={d['cksum']:.4f}"
+                  f"  red0(val={d['red0_val']:.4f},idx={d['red0_idx']})"
+                  f"  red1(val={d['red1_val']:.4f},idx={d['red1_idx']})"
+                  f"  local={d['local_val']:.4f}")
 
 
 def parse_debug_v12(debug_host):
