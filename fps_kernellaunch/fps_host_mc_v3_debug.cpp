@@ -28,6 +28,8 @@ static void *g_v3dbg_scratch_buf = nullptr;
 
 static aclrtStream g_mini_stream = nullptr;
 static void *g_mini_debug_buf = nullptr;
+static void *g_mini_results_buf = nullptr;
+static void *g_mini_scratch_buf = nullptr;
 
 extern "C" int fps_run_minimal_test(float *debug_host, int debug_host_size)
 {
@@ -38,9 +40,18 @@ extern "C" int fps_run_minimal_test(float *debug_host, int debug_host_size)
         aclrtMalloc(&g_mini_debug_buf, MINI_DEBUG_SIZE * sizeof(float),
             ACL_MEM_MALLOC_HUGE_FIRST);
     }
+    if (g_mini_results_buf == nullptr) {
+        aclrtMalloc(&g_mini_results_buf, NUM_CORES * CHUNK * sizeof(float),
+            ACL_MEM_MALLOC_HUGE_FIRST);
+    }
+    if (g_mini_scratch_buf == nullptr) {
+        aclrtMalloc(&g_mini_scratch_buf, NUM_CORES * SCRATCH_PER_CORE * sizeof(float),
+            ACL_MEM_MALLOC_HUGE_FIRST);
+    }
 
+    // Pass 5 params (same as v3 debug), only debug is used by kernel
     aclrtlaunch_fps_custom_minimal_test(NUM_CORES, g_mini_stream,
-        g_mini_debug_buf);
+        nullptr, nullptr, g_mini_results_buf, g_mini_debug_buf, g_mini_scratch_buf);
     aclrtSynchronizeStream(g_mini_stream);
 
     if (debug_host != nullptr && debug_host_size >= (int)MINI_DEBUG_SIZE) {
