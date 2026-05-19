@@ -1,6 +1,10 @@
 /**
- * Debug version of v3 multi-core FPS kernel (pure vector+DMA cross-core).
- * Writes per-core intermediate results to debug GM buffer for first 3 iterations.
+ * Debug version of v3 multi-core FPS kernel.
+ * 6 checkpoints per (core, iter): dup_ok, cksum, reduceVal, reduceIdx, localBestVal, localBestIdx
+ * dup_ok:  dist[0] after Duplicate init (~1e10 = OK, 0 = FAIL)
+ * cksum:   sum of dist[0..3] after distance update (>0 = OK, 0 = FAIL)
+ * reduceVal/Idx: WholeReduceMax block-0 result
+ * localBestVal/Idx: scalar scan result
  */
 #include "kernel_operator.h"
 
@@ -11,6 +15,7 @@ constexpr int32_t NUM_CORES = 8;
 constexpr int32_t CHUNK = N / NUM_CORES;
 constexpr int32_t BLOCKS_PER_CORE = CHUNK / BLOCK_SIZE;
 constexpr int32_t DEBUG_ITERS = 3;
+constexpr int32_t DIAG_FIELDS = 6;
 
 class KernelFpsMultiCoreV3Debug {
 public:
@@ -22,7 +27,7 @@ public:
         xyzGm.SetGlobalBuffer((__gm__ float *)xyz, 3 * N);
         idxGm.SetGlobalBuffer((__gm__ int32_t *)idx, NPOINTS);
         resultsGm.SetGlobalBuffer((__gm__ float *)results, NUM_CORES * CHUNK);
-        debugGm.SetGlobalBuffer((__gm__ float *)debug, NUM_CORES * 4 * DEBUG_ITERS);
+        debugGm.SetGlobalBuffer((__gm__ float *)debug, NUM_CORES * DIAG_FIELDS * DEBUG_ITERS);
 
         pipe.InitBuffer(xyzBuf, 3 * N * sizeof(float));
         pipe.InitBuffer(distBuf, CHUNK * sizeof(float));
@@ -96,16 +101,27 @@ public:
                 }
             }
 
-            // Debug: save pre-sync local values (use SetValue on debugGm, only for debug readback)
+            // Diagnostics
             if (j <= DEBUG_ITERS) {
-                int32_t dbgOff = coreId * 4 * DEBUG_ITERS + (j - 1) * 4;
-                debugGm.SetValue(dbgOff + 0, localBestVal);
-                debugGm.SetValue(dbgOff + 1, *reinterpret_cast<float *>(&localBestIdx));
+                int32_t dOff = coreId * DIAG_FIELDS * DEBUG_ITERS + (j - 1) * DIAG_FIELDS;
+                // 1) dist[0] after init+update (should be valid distance, not 0)
+                debugGm.SetValue(dOff + 0, dist.GetValue(0));
+                // 2) checksum of dist[0..3]
+                float cksum = dist.GetValue(0) + dist.GetValue(1) + dist.GetValue(2) + dist.GetValue(3);
+                debugGm.SetValue(dOff + 1, cksum);
+                // 3) reduce block-0 val
+                debugGm.SetValue(dOff + 2, red.GetValue(0));
+                // 4) reduce block-0 idx
+                debugGm.SetValue(dOff + 3, red.GetValue(1));
+                // 5) localBestVal
+                debugGm.SetValue(dOff + 4, localBestVal);
+                // 6) localBestIdx
+                debugGm.SetValue(dOff + 5, *reinterpret_cast<float *>(&localBestIdx));
             }
 
             // Encode local result into dist[0..1] using Duplicate (vector op)
             AscendC::Duplicate(dist, localBestVal, 1);
-            AscendC::Duplicate(&dist[1], *reinterpret_cast<float *>(&localBestIdx), 1);
+            AscendC::Duplicate(dist[1], *reinterpret_cast<float *>(&localBestIdx), 1);
             pipe_barrier(PIPE_V);
 
             // DataCopy entire dist chunk to GM (pure DMA)
@@ -144,7 +160,7 @@ public:
 
             // Restore dist[0..1] for next iteration
             AscendC::Duplicate(dist, 1e10f, 1);
-            AscendC::Duplicate(&dist[1], 1e10f, 1);
+            AscendC::Duplicate(dist[1], 1e10f, 1);
         }
 
         pipe_barrier(PIPE_V);

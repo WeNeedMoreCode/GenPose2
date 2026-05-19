@@ -1,7 +1,7 @@
 /**
  * Host-side C wrapper for v3 debug multi-core FPS kernel.
  * GM results buffer: NUM_CORES * CHUNK floats (4096 bytes).
- * Debug buffer: NUM_CORES * 4 * DEBUG_ITERS floats (384 bytes).
+ * Debug buffer: NUM_CORES * DIAG_FIELDS * DEBUG_ITERS floats (576 bytes).
  */
 #include "acl/acl.h"
 #include <cstdint>
@@ -9,7 +9,8 @@
 constexpr uint32_t NUM_CORES = 8;
 constexpr uint32_t CHUNK = 1024 / NUM_CORES;
 constexpr uint32_t DEBUG_ITERS = 3;
-constexpr uint32_t DEBUG_SIZE = NUM_CORES * 4 * DEBUG_ITERS;
+constexpr uint32_t DIAG_FIELDS = 6;
+constexpr uint32_t DEBUG_SIZE = NUM_CORES * DIAG_FIELDS * DEBUG_ITERS;
 
 extern void fps_custom_mc_v3_dbg_do(uint32_t blockDim, void *stream,
     uint8_t *xyz, uint8_t *idx, uint8_t *results, uint8_t *debug);

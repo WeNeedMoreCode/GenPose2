@@ -103,7 +103,7 @@ public:
 
             // Encode local result into dist[0..3] using Duplicate (vector op, guaranteed visible to DMA)
             AscendC::Duplicate(dist, localBestVal, 1);          // dist[0] = localBestVal
-            AscendC::Duplicate(&dist[1], *reinterpret_cast<float *>(&localBestIdx), 1); // dist[1] = localBestIdx
+            AscendC::Duplicate(dist[1], *reinterpret_cast<float *>(&localBestIdx), 1);
             pipe_barrier(PIPE_V);
 
             // DataCopy entire dist chunk to GM (pure DMA, no scalar involvement)
@@ -137,7 +137,7 @@ public:
             // Re-init dist for next iteration (dist[0..1] were overwritten)
             // Only need to restore dist[0] and dist[1] to 1e10
             AscendC::Duplicate(dist, 1e10f, 1);
-            AscendC::Duplicate(&dist[1], 1e10f, 1);
+            AscendC::Duplicate(dist[1], 1e10f, 1);
         }
 
         pipe_barrier(PIPE_V);
