@@ -53,6 +53,7 @@ public:
         auto inAll = inBuf.Get<float>();
 
         AscendC::DataCopy(xyz, xyzGm, 3 * N);
+        pipe_barrier(PIPE_MTE2);
         pipe_barrier(PIPE_V);
 
         AscendC::Duplicate(dist, 1e10f, CHUNK);
@@ -138,12 +139,14 @@ public:
 
             // DataCopy entire dist chunk to GM (pure DMA)
             AscendC::DataCopy(resultsGm[coreId * CHUNK], dist, CHUNK);
+            pipe_barrier(PIPE_MTE3);
             pipe_barrier(PIPE_V);
 
             AscendC::SyncAll();
 
             // DataCopy all cores' chunks from GM (pure DMA read)
             AscendC::DataCopy(inAll, resultsGm, NUM_CORES * CHUNK);
+            pipe_barrier(PIPE_MTE2);
             pipe_barrier(PIPE_V);
 
             // Find global argmax
@@ -178,6 +181,7 @@ public:
         pipe_barrier(PIPE_V);
         if (coreId == 0) {
             AscendC::DataCopy(idxGm, idxLocal, NPOINTS);
+            pipe_barrier(PIPE_MTE3);
         }
         pipe_barrier(PIPE_V);
     }
