@@ -1,13 +1,16 @@
 /**
- * Test GetValue on GM with SEPARATE buffers — no buf reuse, no DMA race.
- * buf_src for scratch GM write, buf_out for debug output.
- * Sub-test A: GetValue from host GM, write result to buf_out → debug
- * Sub-test B: Duplicate(buf_src) → DataCopy(scratch) → GetValue(scratch) → Duplicate(buf_out) → DataCopy(debug)
+ * Test GetValue on GM + DataCopy(GM→UB) readback.
+ * Three sub-tests per core, each 8 floats in debug output (total 24 per core):
+ *   A: GetValue from host-written GM
+ *   B: GetValue from kernel-written scratch GM
+ *   C: DataCopy(scratch GM→UB) readback — bypasses GetValue, uses DMA
+ * All results written via Duplicate(count=8)+DataCopy (proven reliable).
  */
 #include "kernel_operator.h"
 
 constexpr int32_t NUM_CORES = 8;
 constexpr int32_t PER_CORE_INPUT = 8;
+constexpr int32_t PER_CORE_DEBUG = 24;  // 3 sub-tests × 8 floats
 
 class KernelGetValCheck {
 public:
@@ -17,45 +20,53 @@ public:
         coreId = AscendC::GetBlockIdx();
         inputGm.SetGlobalBuffer((__gm__ float *)xyz, NUM_CORES * PER_CORE_INPUT);
         scratchGm.SetGlobalBuffer((__gm__ float *)scratch, NUM_CORES * PER_CORE_INPUT);
-        debugGm.SetGlobalBuffer((__gm__ float *)debug, NUM_CORES * 16);
-        pipe.InitBuffer(bufSrc, 8 * sizeof(float));
-        pipe.InitBuffer(bufOut, 8 * sizeof(float));
+        debugGm.SetGlobalBuffer((__gm__ float *)debug, NUM_CORES * PER_CORE_DEBUG);
+        pipe.InitBuffer(bufA, 8 * sizeof(float));
+        pipe.InitBuffer(bufB, 8 * sizeof(float));
+        pipe.InitBuffer(bufC, 8 * sizeof(float));
     }
 
     __aicore__ inline void Process()
     {
-        auto bSrc = bufSrc.Get<float>();
-        auto bOut = bufOut.Get<float>();
+        auto bA = bufA.Get<float>();
+        auto bB = bufB.Get<float>();
+        auto bC = bufC.Get<float>();
+        int32_t base = coreId * PER_CORE_DEBUG;
 
-        // Sub-test A: GetValue from host-written GM → write to bufOut (separate from bSrc)
+        // --- Sub-test A: GetValue from host-written GM ---
         float val_a = inputGm.GetValue(coreId * PER_CORE_INPUT);
-        AscendC::Duplicate(bOut, val_a, 8);
+        AscendC::Duplicate(bA, val_a, 8);
         pipe_barrier(PIPE_V);
-        AscendC::DataCopy(debugGm[coreId * 16], bOut, 8);
-        pipe_barrier(PIPE_V);
-
-        // Sub-test B: DataCopy(bufSrc → scratch GM) then GetValue(scratch)
-        // bufSrc is NEVER used for debug output, no DMA race
-        float known_b = (float)(coreId + 1) * 100.0f;
-        AscendC::Duplicate(bSrc, known_b, 8);
-        pipe_barrier(PIPE_V);
-        AscendC::DataCopy(scratchGm[coreId * PER_CORE_INPUT], bSrc, 8);
+        AscendC::DataCopy(debugGm[base], bA, 8);
         pipe_barrier(PIPE_V);
 
+        // --- Write known values to scratch GM ---
+        float known = (float)(coreId + 1) * 100.0f;
+        AscendC::Duplicate(bB, known, 8);
+        pipe_barrier(PIPE_V);
+        AscendC::DataCopy(scratchGm[coreId * PER_CORE_INPUT], bB, 8);
+        pipe_barrier(PIPE_V);
+
+        // --- Sub-test B: GetValue from scratch GM ---
         float val_b = scratchGm.GetValue(coreId * PER_CORE_INPUT);
-
-        // Write val_b to debug via bufOut (reused, but previous DataCopy already sent)
-        AscendC::Duplicate(bOut, val_b, 8);
+        AscendC::Duplicate(bA, val_b, 8);
         pipe_barrier(PIPE_V);
-        AscendC::DataCopy(debugGm[coreId * 16 + 8], bOut, 8);
+        AscendC::DataCopy(debugGm[base + 8], bA, 8);
+        pipe_barrier(PIPE_V);
+
+        // --- Sub-test C: DataCopy(scratch GM→UB) readback ---
+        AscendC::DataCopy(bC, scratchGm[coreId * PER_CORE_INPUT], 8);
+        pipe_barrier(PIPE_V);
+        AscendC::DataCopy(debugGm[base + 16], bC, 8);
         pipe_barrier(PIPE_V);
     }
 
 private:
     int32_t coreId;
     AscendC::TPipe pipe;
-    AscendC::TBuf<AscendC::TPosition::VECIN> bufSrc;
-    AscendC::TBuf<AscendC::TPosition::VECIN> bufOut;
+    AscendC::TBuf<AscendC::TPosition::VECIN> bufA;
+    AscendC::TBuf<AscendC::TPosition::VECIN> bufB;
+    AscendC::TBuf<AscendC::TPosition::VECIN> bufC;
     AscendC::GlobalTensor<float> inputGm;
     AscendC::GlobalTensor<float> scratchGm;
     AscendC::GlobalTensor<float> debugGm;

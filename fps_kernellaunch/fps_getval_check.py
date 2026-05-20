@@ -1,8 +1,9 @@
 """
-Test: does GetValue on GlobalTensor work on all 8 cores?
-Sub-test A: GetValue from host-written GM (aclrtMemcpy H2D → GetValue)
-Sub-test B: DataCopy(UB→scratch GM) → GetValue from scratch GM
-Results written via Duplicate(count=8)+DataCopy (proven reliable).
+Test: GetValue on GM + DataCopy(GM→UB) readback.
+Three sub-tests per core:
+  A: GetValue from host-written GM (aclrtMemcpy H2D)
+  B: GetValue from kernel-written scratch GM
+  C: DataCopy(scratch GM→UB) readback — bypasses GetValue, uses DMA
 """
 import ctypes
 import os
@@ -14,7 +15,8 @@ torch.npu.set_device(0)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 NUM_CORES = 8
-DEBUG_SIZE = NUM_CORES * 16  # 8 per sub-test × 2
+PER_CORE_DEBUG = 24  # 3 sub-tests × 8
+DEBUG_SIZE = NUM_CORES * PER_CORE_DEBUG
 
 
 def run_getval_check():
@@ -30,22 +32,42 @@ def run_getval_check():
     assert ret == 0, f"Kernel returned {ret}"
 
     vals = np.array([debug_host[i] for i in range(DEBUG_SIZE)], dtype=np.float32)
-    print("=== GetValue on GlobalTensor ===\n")
-    print(f"{'Core':>4}  {'A: hostGM':>12}  {'expect':>12}  {'B: scratch':>12}  {'expect':>12}  {'A':>4}  {'B':>4}")
+    print("=== GetValue on GM + DataCopy readback ===\n")
+    header = (f"{'Core':>4}  {'A:GetVal(host)':>14}  {'expect':>8}"
+              f"  {'B:GetVal(scr)':>14}  {'expect':>8}"
+              f"  {'C:DCopy(scr)':>13}  {'expect':>8}")
+    print(header)
     all_ok = True
     for core in range(NUM_CORES):
-        off = core * 16
-        got_a = vals[off]          # GetValue from host-written GM
+        off = core * PER_CORE_DEBUG
+        got_a = vals[off]
         exp_a = (core + 1) * 10.0
-        got_b = vals[off + 8]      # GetValue from kernel-written scratch GM
+        got_b = vals[off + 8]
         exp_b = (core + 1) * 100.0
+        got_c = vals[off + 16]
+        exp_c = (core + 1) * 100.0  # same as B expect
         ok_a = "OK" if abs(got_a - exp_a) < 0.01 else "FAIL"
         ok_b = "OK" if abs(got_b - exp_b) < 0.01 else "FAIL"
-        if ok_a != "OK" or ok_b != "OK":
+        ok_c = "OK" if abs(got_c - exp_c) < 0.01 else "FAIL"
+        if ok_a != "OK" or ok_b != "OK" or ok_c != "OK":
             all_ok = False
-        print(f"{core:>4}  {got_a:>12.1f}  {exp_a:>12.1f}  {got_b:>12.1f}  {exp_b:>12.1f}  {ok_a:>4}  {ok_b:>4}")
+        print(f"{core:>4}  {got_a:>14.1f}{ok_a:>4}({exp_a:>6.0f})"
+              f"  {got_b:>14.1f}{ok_b:>4}({exp_b:>6.0f})"
+              f"  {got_c:>13.1f}{ok_c:>4}({exp_c:>6.0f})")
 
     print(f"\nResult: {'ALL PASS' if all_ok else 'SOME FAILED'}")
+
+    # Diagnosis summary
+    print("\n--- Diagnosis ---")
+    b_pass = sum(1 for c in range(NUM_CORES) if abs(vals[c * PER_CORE_DEBUG + 8] - (c + 1) * 100.0) < 0.01)
+    c_pass = sum(1 for c in range(NUM_CORES) if abs(vals[c * PER_CORE_DEBUG + 16] - (c + 1) * 100.0) < 0.01)
+    if c_pass == NUM_CORES and b_pass < NUM_CORES:
+        print("DataCopy readback OK but GetValue FAIL → scratch GM data correct, GetValue API is the problem")
+    elif c_pass < NUM_CORES:
+        print("DataCopy readback also FAIL → scratch GM data is wrong, issue is in DataCopy(UB→GM)")
+    else:
+        print("Both GetValue and DataCopy readback OK → no issue detected")
+
     return all_ok
 
 

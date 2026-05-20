@@ -10,7 +10,7 @@
 constexpr uint32_t NUM_CORES = 8;
 constexpr uint32_t PER_CORE_INPUT = 8;
 constexpr uint32_t INPUT_SIZE = NUM_CORES * PER_CORE_INPUT;  // 64 floats
-constexpr uint32_t DEBUG_SIZE = NUM_CORES * 16;              // 128 floats
+constexpr uint32_t DEBUG_SIZE = NUM_CORES * 24;              // 192 floats (3 sub-tests × 8)
 
 static aclrtStream g_stream = nullptr;
 static void *g_input_buf = nullptr;
