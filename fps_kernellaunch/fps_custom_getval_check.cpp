@@ -41,7 +41,10 @@ public:
         auto syncLocal = syncBuf.Get<int32_t>();
         int32_t base = coreId * PER_CORE_DEBUG;
 
-        // --- Sub-test A: GetValue from host-written GM ---
+        // --- SyncAll #1: ensure host-written data is visible to all cores ---
+        AscendC::SyncAll(syncGm, syncLocal, NUM_CORES);
+
+        // --- Sub-test A: GetValue from host-written GM (after SyncAll #1) ---
         float val_a = inputGm.GetValue(coreId * PER_CORE_INPUT);
         AscendC::Duplicate(bA, val_a, 8);
         pipe_barrier(PIPE_V);
@@ -55,17 +58,17 @@ public:
         AscendC::DataCopy(scratchGm[coreId * PER_CORE_INPUT], bB, 8);
         pipe_barrier(PIPE_V);
 
-        // --- SyncAll: ensure all cores' writes are visible ---
-        AscendC::SyncAll(syncGm, syncLocal);
+        // --- SyncAll #2: ensure all cores' scratch writes are visible ---
+        AscendC::SyncAll(syncGm, syncLocal, NUM_CORES);
 
-        // --- Sub-test B: GetValue from scratch GM (after SyncAll) ---
+        // --- Sub-test B: GetValue from scratch GM (after SyncAll #2) ---
         float val_b = scratchGm.GetValue(coreId * PER_CORE_INPUT);
         AscendC::Duplicate(bA, val_b, 8);
         pipe_barrier(PIPE_V);
         AscendC::DataCopy(debugGm[base + 8], bA, 8);
         pipe_barrier(PIPE_V);
 
-        // --- Sub-test C: DataCopy(scratch GM→UB) readback (after SyncAll) ---
+        // --- Sub-test C: DataCopy(scratch GM→UB) readback (after SyncAll #2) ---
         AscendC::DataCopy(bC, scratchGm[coreId * PER_CORE_INPUT], 8);
         pipe_barrier(PIPE_V);
         AscendC::DataCopy(debugGm[base + 16], bC, 8);
