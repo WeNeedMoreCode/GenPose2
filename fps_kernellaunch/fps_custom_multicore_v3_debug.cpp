@@ -61,7 +61,7 @@ public:
         pipe.InitBuffer(redBuf, BLOCK_SIZE * sizeof(float));
         pipe.InitBuffer(dbgBuf, DIAG_FIELDS * sizeof(float));
         pipe.InitBuffer(syncBuf, NUM_CORES * SYNCALL_PER_CORE * sizeof(int32_t));
-        pipe.InitBuffer(crossBuf, NUM_CORES * 8 * sizeof(float));
+        pipe.InitBuffer(crossBuf, NUM_CORES * CHUNK * sizeof(float));
     }
 
     __aicore__ inline void Process()
@@ -151,19 +151,17 @@ public:
             // SyncAll: ensure all cores' writes to resultsGm are visible
             AscendC::SyncAll(syncGm, syncLocal, NUM_CORES);
 
-            // Cross-core argmax: DataCopy(GM→UB) then scan UB
-            for (int32_t c = 0; c < NUM_CORES; c++) {
-                AscendC::DataCopy(cross + c * 8, resultsGm[c * CHUNK], 8);
-            }
+            // Cross-core argmax: DataCopy(all results GM→UB) then scan UB
+            AscendC::DataCopy(cross, resultsGm, NUM_CORES * CHUNK);
             pipe_barrier(PIPE_V);
 
             float globalBestVal = -1.0f;
             int32_t globalBestIdx = 0;
             for (int32_t c = 0; c < NUM_CORES; c++) {
-                float val = cross.GetValue(c * 8);
+                float val = cross.GetValue(c * CHUNK);
                 if (val > globalBestVal) {
                     globalBestVal = val;
-                    float idxFloat = cross.GetValue(c * 8 + 1);
+                    float idxFloat = cross.GetValue(c * CHUNK + 1);
                     globalBestIdx = *reinterpret_cast<uint32_t *>(&idxFloat);
                 }
             }
