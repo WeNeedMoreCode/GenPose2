@@ -1,6 +1,6 @@
 /**
- * Host-side C wrapper for v3 debug multi-core FPS kernel.
- * All scalar reads routed through GM (scratch buffer).
+ * Host wrapper for v3 debug multi-core FPS kernel.
+ * DIAG_FIELDS = 16 (10 meaningful + 6 padding for DataCopy alignment).
  */
 #include "acl/acl.h"
 #include "aclrtlaunch_fps_custom_mc_v3_dbg.h"
@@ -8,8 +8,8 @@
 
 constexpr uint32_t NUM_CORES = 8;
 constexpr uint32_t CHUNK = 1024 / NUM_CORES;
+constexpr uint32_t DIAG_FIELDS = 16;
 constexpr uint32_t DEBUG_ITERS = 3;
-constexpr uint32_t DIAG_FIELDS = 8;
 constexpr uint32_t DEBUG_SIZE = NUM_CORES * DIAG_FIELDS * DEBUG_ITERS;
 constexpr uint32_t SCRATCH_PER_CORE = 64;
 

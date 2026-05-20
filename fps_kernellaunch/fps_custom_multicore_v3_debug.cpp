@@ -1,15 +1,22 @@
 /**
- * Debug version of v3 multi-core FPS kernel — ALL SCALAR READS VIA GM.
- * No GetValue on vector-written UB; all scalar reads go through GlobalMemory.
- * 8 checkpoints per (core, iter):
- *   CP1: dist_init    — set to 1e10 (known constant, no UB read)
- *   CP2: dist_post    — dist[0] after distance update (via scratch GM)
- *   CP3: cksum         — dist[0..3] sum after distance update (via scratch GM)
- *   CP4: red0_val      — WholeReduceMax block-0 value (via scratch GM)
- *   CP5: red0_idx      — WholeReduceMax block-0 index (via scratch GM)
- *   CP6: red1_val      — WholeReduceMax block-1 value (via scratch GM)
- *   CP7: red1_idx      — WholeReduceMax block-1 index (via scratch GM)
- *   CP8: localBestVal  — scalar scan result (via scratch GM)
+ * Debug v3 multi-core FPS kernel — overlap bug fixed, SetValue replaced.
+ *
+ * Changes from previous version:
+ *   - Overlap bug fixed: single 10-field write per iter (stride 16 for DataCopy)
+ *   - All debugGm.SetValue replaced with Duplicate + DataCopy (proven reliable)
+ *   - Added globalBestVal/globalBestIdx fields (CP8, CP9)
+ *
+ * 10 checkpoints per (core, iter), stride 16:
+ *   CP0: distInit    — 1e10 (j==1) or distPostVal (j>1)
+ *   CP1: distPost    — dist[0] after distance update
+ *   CP2: cksum       — dist[0..3] sum
+ *   CP3: red0_val    — WholeReduceMax block-0 value
+ *   CP4: red0_idx    — WholeReduceMax block-0 index
+ *   CP5: red1_val    — WholeReduceMax block-1 value
+ *   CP6: red1_idx    — WholeReduceMax block-1 index
+ *   CP7: localBest   — scalar scan result
+ *   CP8: globalBest  — cross-core argmax value
+ *   CP9: globalIdx   — cross-core argmax index (as float)
  */
 #include "kernel_operator.h"
 
@@ -20,7 +27,8 @@ constexpr int32_t NUM_CORES = 8;
 constexpr int32_t CHUNK = N / NUM_CORES;
 constexpr int32_t BLOCKS_PER_CORE = CHUNK / BLOCK_SIZE;
 constexpr int32_t DEBUG_ITERS = 3;
-constexpr int32_t DIAG_FIELDS = 8;
+constexpr int32_t ACTUAL_FIELDS = 10;
+constexpr int32_t DIAG_FIELDS = 16;  // DataCopy needs multiple of 8
 constexpr int32_t SCRATCH_PER_CORE = 64;
 
 class KernelFpsMultiCoreV3Debug {
@@ -44,6 +52,7 @@ public:
         pipe.InitBuffer(tmpBuf, BLOCK_SIZE * sizeof(float));
         pipe.InitBuffer(blkBuf, BLOCK_SIZE * sizeof(float));
         pipe.InitBuffer(redBuf, BLOCK_SIZE * sizeof(float));
+        pipe.InitBuffer(dbgBuf, DIAG_FIELDS * sizeof(float));
     }
 
     __aicore__ inline void Process()
@@ -64,12 +73,9 @@ public:
         }
         pipe_barrier(PIPE_V);
 
-        float distInitVal = 1e10f;
-
         int32_t old = 0;
 
         for (int32_t j = 1; j < NPOINTS; j++) {
-            // Read reference point coords from GM (not UB)
             float x1 = xyzGm.GetValue(old);
             float y1 = xyzGm.GetValue(N + old);
             float z1 = xyzGm.GetValue(2 * N + old);
@@ -96,7 +102,7 @@ public:
             }
             pipe_barrier(PIPE_V);
 
-            // CP2/CP3: copy dist to scratch GM, read from GM
+            // dist → scratch GM for scalar reads
             AscendC::DataCopy(scratchGm[scratchOff], dist, 8);
             pipe_barrier(PIPE_V);
 
@@ -109,7 +115,7 @@ public:
             AscendC::WholeReduceMax<float>(red, dist, 64, BLOCKS_PER_CORE, 1, 1, 8);
             pipe_barrier(PIPE_V);
 
-            // CP4-7: copy reduce results to scratch GM, read from GM
+            // reduce → scratch GM for scalar reads
             AscendC::DataCopy(scratchGm[scratchOff], red, 8);
             pipe_barrier(PIPE_V);
 
@@ -131,28 +137,16 @@ public:
                 }
             }
 
-            if (j <= DEBUG_ITERS) {
-                int32_t dOff = coreId * DIAG_FIELDS * DEBUG_ITERS + (j - 1) * DIAG_FIELDS;
-                debugGm.SetValue(dOff + 0, (j == 1) ? distInitVal : distPostVal);
-                debugGm.SetValue(dOff + 1, distPostVal);
-                debugGm.SetValue(dOff + 2, cksum);
-                debugGm.SetValue(dOff + 3, red0Val);
-                debugGm.SetValue(dOff + 4, red0Idx);
-                debugGm.SetValue(dOff + 5, red1Val);
-                debugGm.SetValue(dOff + 6, red1Idx);
-                debugGm.SetValue(dOff + 7, localBestVal);
-            }
-
+            // Write local result to results GM for cross-core argmax
             AscendC::Duplicate(dist, localBestVal, 1);
             AscendC::Duplicate(dist[1], *reinterpret_cast<float *>(&localBestIdx), 1);
             pipe_barrier(PIPE_V);
-
             AscendC::DataCopy(resultsGm[coreId * CHUNK], dist, CHUNK);
             pipe_barrier(PIPE_V);
 
             AscendC::SyncAll();
 
-            // Cross-core argmax: read directly from resultsGm (no inAll UB)
+            // Cross-core argmax from resultsGm
             float globalBestVal = -1.0f;
             int32_t globalBestIdx = 0;
             for (int32_t c = 0; c < NUM_CORES; c++) {
@@ -164,10 +158,24 @@ public:
                 }
             }
 
+            // Debug output: Duplicate + DataCopy (no SetValue on GM, no overlap)
             if (j <= DEBUG_ITERS) {
-                int32_t dbgOff = coreId * 4 * DEBUG_ITERS + (j - 1) * 4;
-                debugGm.SetValue(dbgOff + 2, globalBestVal);
-                debugGm.SetValue(dbgOff + 3, *reinterpret_cast<float *>(&globalBestIdx));
+                auto dbg = dbgBuf.Get<float>();
+                AscendC::Duplicate(dbg[0], (j == 1) ? 1e10f : distPostVal, 1);
+                AscendC::Duplicate(dbg[1], distPostVal, 1);
+                AscendC::Duplicate(dbg[2], cksum, 1);
+                AscendC::Duplicate(dbg[3], red0Val, 1);
+                AscendC::Duplicate(dbg[4], red0Idx, 1);
+                AscendC::Duplicate(dbg[5], red1Val, 1);
+                AscendC::Duplicate(dbg[6], red1Idx, 1);
+                AscendC::Duplicate(dbg[7], localBestVal, 1);
+                AscendC::Duplicate(dbg[8], globalBestVal, 1);
+                AscendC::Duplicate(dbg[9], *reinterpret_cast<float *>(&globalBestIdx), 1);
+                pipe_barrier(PIPE_V);
+
+                int32_t dOff = coreId * DIAG_FIELDS * DEBUG_ITERS + (j - 1) * DIAG_FIELDS;
+                AscendC::DataCopy(debugGm[dOff], dbg, DIAG_FIELDS);
+                pipe_barrier(PIPE_V);
             }
 
             if (coreId == 0) {
@@ -197,6 +205,7 @@ private:
     AscendC::TBuf<AscendC::TPosition::VECIN> tmpBuf;
     AscendC::TBuf<AscendC::TPosition::VECIN> blkBuf;
     AscendC::TBuf<AscendC::TPosition::VECIN> redBuf;
+    AscendC::TBuf<AscendC::TPosition::VECIN> dbgBuf;
     AscendC::GlobalTensor<float> xyzGm;
     AscendC::GlobalTensor<int32_t> idxGm;
     AscendC::GlobalTensor<float> resultsGm;

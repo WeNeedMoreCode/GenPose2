@@ -5,6 +5,9 @@ Core 0 -> 100.0, Core 1 -> 200.0, ..., Core 7 -> 800.0
 import ctypes
 import os
 import numpy as np
+import torch
+import torch_npu  # noqa: F401 — initializes ACL framework
+torch.npu.set_device(0)  # activate device context before any ACL calls
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 NUM_CORES = 8

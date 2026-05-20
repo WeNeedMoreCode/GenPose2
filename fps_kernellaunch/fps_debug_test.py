@@ -1,6 +1,6 @@
 """
-Debug test for v3 multi-core FPS kernel with aclrtlaunch dispatch.
-Compares 8-field diagnostics across cores and validates against PyTorch.
+Debug test for v3 multi-core FPS kernel (overlap-fixed, Duplicate+DataCopy version).
+Compares 10-field diagnostics across cores and validates against PyTorch.
 """
 import ctypes
 import os
@@ -9,9 +9,12 @@ import torch
 import torch_npu  # noqa: F401
 import pointnet2_ops
 
+torch.npu.set_device(0)  # activate device context
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 NUM_CORES = 8
-DIAG_FIELDS = 8
+ACTUAL_FIELDS = 10
+DIAG_FIELDS = 16  # stride (DataCopy alignment)
 DEBUG_ITERS = 3
 DEBUG_SIZE = NUM_CORES * DIAG_FIELDS * DEBUG_ITERS
 N = 1024
@@ -37,7 +40,7 @@ def float_to_idx(f):
 
 
 def parse_debug_v3(debug_host):
-    """Parse v3 8-field diagnostic."""
+    """Parse v3 10-field diagnostic (stride 16)."""
     vals = np.array([debug_host[i] for i in range(DEBUG_SIZE)], dtype=np.float32)
     results = []
     for it in range(DEBUG_ITERS):
@@ -53,6 +56,8 @@ def parse_debug_v3(debug_host):
                 'red1_val': vals[off + 5],
                 'red1_idx': float_to_idx(vals[off + 6]),
                 'local_val': vals[off + 7],
+                'global_val': vals[off + 8],
+                'global_idx': float_to_idx(vals[off + 9]),
             })
         results.append(iter_data)
     return results
@@ -64,12 +69,15 @@ def print_diag_v3(debug_data):
         for core, d in enumerate(iter_data):
             init_ok = "OK" if d['dist_init'] > 1e9 else "FAIL"
             post_ok = "OK" if d['dist_post'] > 0 or d['cksum'] > 0 else "ZERO"
+            local_ok = "OK" if d['local_val'] > 0 else "ZERO"
+            global_ok = "OK" if d['global_val'] > 0 else "ZERO"
             print(f"  Core {core}: init={d['dist_init']:.1f}({init_ok})"
                   f"  post={d['dist_post']:.4f}({post_ok})"
                   f"  cksum={d['cksum']:.4f}"
-                  f"  red0(val={d['red0_val']:.4f},idx={d['red0_idx']})"
-                  f"  red1(val={d['red1_val']:.4f},idx={d['red1_idx']})"
-                  f"  local={d['local_val']:.4f}")
+                  f"  red0(v={d['red0_val']:.4f},i={d['red0_idx']})"
+                  f"  red1(v={d['red1_val']:.4f},i={d['red1_idx']})"
+                  f"  local={d['local_val']:.4f}({local_ok})"
+                  f"  global(v={d['global_val']:.4f},i={d['global_idx']})({global_ok})")
 
 
 def run_debug():
@@ -99,7 +107,7 @@ def run_debug():
         )
         assert ret == 0
         diag_data = parse_debug_v3(debug_host)
-        print(f"\n=== v3 Diagnostics (aclrtlaunch dispatch) ===")
+        print(f"\n=== v3 Diagnostics (overlap-fixed, Duplicate+DataCopy) ===")
         print_diag_v3(diag_data)
         idx_v3 = idx_dbg[0].cpu().numpy()
         match = "MATCH" if np.array_equal(idx_py[0].cpu().numpy(), idx_v3) else "MISMATCH"
