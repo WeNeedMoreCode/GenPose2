@@ -1,9 +1,8 @@
 /**
- * Minimal test: does Duplicate(buf, val, 1) work on all 8 cores?
- * Each core writes 2 values:
- *   - val_a using Duplicate(count=1) → output[coreId*16 + 0..7]
- *   - val_b using Duplicate(count=8) → output[coreId*16 + 8..15]
- * Host checks: val_a and val_b both correct? If count=1 fails, val_a=0.
+ * Test Duplicate(count=1) with SEPARATE buffers — no buf reuse, no DMA race.
+ * buf_a only used for sub-test A, buf_b only for sub-test B.
+ * If count=1 works: debug[coreId*16 + 0] = val_a
+ * If count=1 broken: debug[coreId*16 + 0] = 0 (from clear)
  */
 #include "kernel_operator.h"
 
@@ -16,36 +15,39 @@ public:
     {
         coreId = AscendC::GetBlockIdx();
         debugGm.SetGlobalBuffer((__gm__ float *)debug, NUM_CORES * 16);
-        pipe.InitBuffer(buf, 8 * sizeof(float));
+        pipe.InitBuffer(bufA, 8 * sizeof(float));
+        pipe.InitBuffer(bufB, 8 * sizeof(float));
     }
 
     __aicore__ inline void Process()
     {
-        auto b = buf.Get<float>();
+        auto ba = bufA.Get<float>();
+        auto bb = bufB.Get<float>();
 
-        // Sub-test A: Duplicate count=1
-        AscendC::Duplicate(b, 0.0f, 8);  // clear
+        // Sub-test A: Duplicate count=1 → writes to bufA (NEVER reused)
+        AscendC::Duplicate(ba, 0.0f, 8);  // clear to 0
         pipe_barrier(PIPE_V);
         float val_a = (float)(coreId + 1) * 100.0f;
-        AscendC::Duplicate(b, val_a, 1);
+        AscendC::Duplicate(ba, val_a, 1);
         pipe_barrier(PIPE_V);
-        AscendC::DataCopy(debugGm[coreId * 16], b, 8);
-        pipe_barrier(PIPE_MTE3);  // wait DMA finish before reusing buf
+        AscendC::DataCopy(debugGm[coreId * 16], ba, 8);
+        pipe_barrier(PIPE_V);
 
-        // Sub-test B: Duplicate count=8
-        AscendC::Duplicate(b, 0.0f, 8);  // clear
+        // Sub-test B: Duplicate count=8 → writes to bufB (SEPARATE buffer)
+        AscendC::Duplicate(bb, 0.0f, 8);
         pipe_barrier(PIPE_V);
         float val_b = (float)(coreId + 1) * 200.0f;
-        AscendC::Duplicate(b, val_b, 8);
+        AscendC::Duplicate(bb, val_b, 8);
         pipe_barrier(PIPE_V);
-        AscendC::DataCopy(debugGm[coreId * 16 + 8], b, 8);
-        pipe_barrier(PIPE_MTE3);
+        AscendC::DataCopy(debugGm[coreId * 16 + 8], bb, 8);
+        pipe_barrier(PIPE_V);
     }
 
 private:
     int32_t coreId;
     AscendC::TPipe pipe;
-    AscendC::TBuf<AscendC::TPosition::VECIN> buf;
+    AscendC::TBuf<AscendC::TPosition::VECIN> bufA;
+    AscendC::TBuf<AscendC::TPosition::VECIN> bufB;
     AscendC::GlobalTensor<float> debugGm;
 };
 
