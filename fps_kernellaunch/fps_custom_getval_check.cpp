@@ -31,20 +31,20 @@ public:
         AscendC::Duplicate(b, val_a, 8);
         pipe_barrier(PIPE_V);
         AscendC::DataCopy(debugGm[coreId * 16], b, 8);
-        pipe_barrier(PIPE_V);
+        pipe_barrier(PIPE_MTE3);  // wait DMA finish before reusing buf
 
         // Sub-test B: DataCopy(UB→scratch GM) then GetValue from scratch
         float known_b = (float)(coreId + 1) * 100.0f;
         AscendC::Duplicate(b, known_b, 8);
         pipe_barrier(PIPE_V);
         AscendC::DataCopy(scratchGm[coreId * PER_CORE_INPUT], b, 8);
-        pipe_barrier(PIPE_V);
+        pipe_barrier(PIPE_MTE3);  // wait DMA finish before GetValue
 
         float val_b = scratchGm.GetValue(coreId * PER_CORE_INPUT);
         AscendC::Duplicate(b, val_b, 8);
         pipe_barrier(PIPE_V);
         AscendC::DataCopy(debugGm[coreId * 16 + 8], b, 8);
-        pipe_barrier(PIPE_V);
+        pipe_barrier(PIPE_MTE3);
     }
 
 private:

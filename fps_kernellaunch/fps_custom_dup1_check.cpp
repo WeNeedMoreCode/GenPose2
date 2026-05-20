@@ -30,7 +30,7 @@ public:
         AscendC::Duplicate(b, val_a, 1);
         pipe_barrier(PIPE_V);
         AscendC::DataCopy(debugGm[coreId * 16], b, 8);
-        pipe_barrier(PIPE_V);
+        pipe_barrier(PIPE_MTE3);  // wait DMA finish before reusing buf
 
         // Sub-test B: Duplicate count=8
         AscendC::Duplicate(b, 0.0f, 8);  // clear
@@ -39,7 +39,7 @@ public:
         AscendC::Duplicate(b, val_b, 8);
         pipe_barrier(PIPE_V);
         AscendC::DataCopy(debugGm[coreId * 16 + 8], b, 8);
-        pipe_barrier(PIPE_V);
+        pipe_barrier(PIPE_MTE3);
     }
 
 private:
