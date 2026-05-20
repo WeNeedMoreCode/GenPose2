@@ -1,6 +1,7 @@
 /**
  * Host wrapper for v3 debug multi-core FPS kernel.
  * DIAG_FIELDS = 16 (10 meaningful + 6 padding for DataCopy alignment).
+ * Now includes sync buffer for SyncAll.
  */
 #include "acl/acl.h"
 #include "aclrtlaunch_fps_custom_mc_v3_dbg.h"
@@ -12,11 +13,13 @@ constexpr uint32_t DIAG_FIELDS = 16;
 constexpr uint32_t DEBUG_ITERS = 3;
 constexpr uint32_t DEBUG_SIZE = NUM_CORES * DIAG_FIELDS * DEBUG_ITERS;
 constexpr uint32_t SCRATCH_PER_CORE = 64;
+constexpr uint32_t SYNC_SIZE = NUM_CORES * 8;
 
 static aclrtStream g_v3dbg_stream = nullptr;
 static void *g_v3dbg_results_buf = nullptr;
 static void *g_v3dbg_debug_buf = nullptr;
 static void *g_v3dbg_scratch_buf = nullptr;
+static void *g_v3dbg_sync_buf = nullptr;
 
 extern "C" int fps_run_mc_v3_dbg(void *xyz_ptr, void *idx_ptr,
     float *debug_host, int debug_host_size)
@@ -36,9 +39,16 @@ extern "C" int fps_run_mc_v3_dbg(void *xyz_ptr, void *idx_ptr,
         aclrtMalloc(&g_v3dbg_scratch_buf, NUM_CORES * SCRATCH_PER_CORE * sizeof(float),
             ACL_MEM_MALLOC_HUGE_FIRST);
     }
+    if (g_v3dbg_sync_buf == nullptr) {
+        aclrtMalloc(&g_v3dbg_sync_buf, SYNC_SIZE * sizeof(int32_t),
+            ACL_MEM_MALLOC_HUGE_FIRST);
+    }
+
+    aclrtMemset(g_v3dbg_debug_buf, DEBUG_SIZE * sizeof(float), 0xFF, DEBUG_SIZE * sizeof(float));
 
     aclrtlaunch_fps_custom_mc_v3_dbg(NUM_CORES, g_v3dbg_stream,
-        xyz_ptr, idx_ptr, g_v3dbg_results_buf, g_v3dbg_debug_buf, g_v3dbg_scratch_buf);
+        xyz_ptr, idx_ptr, g_v3dbg_results_buf, g_v3dbg_debug_buf,
+        g_v3dbg_scratch_buf, g_v3dbg_sync_buf);
     aclrtSynchronizeStream(g_v3dbg_stream);
 
     if (debug_host != nullptr && debug_host_size >= (int)DEBUG_SIZE) {

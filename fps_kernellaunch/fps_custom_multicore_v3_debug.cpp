@@ -1,10 +1,18 @@
 /**
- * Debug v3 multi-core FPS kernel — overlap bug fixed, SetValue replaced.
+ * Debug v3 multi-core FPS kernel — GetValue replaced with UB reads.
  *
- * Changes from previous version:
- *   - Overlap bug fixed: single 10-field write per iter (stride 16 for DataCopy)
- *   - All debugGm.SetValue replaced with Duplicate + DataCopy (proven reliable)
- *   - Added globalBestVal/globalBestIdx fields (CP8, CP9)
+ * Key changes from previous version:
+ *   - All GlobalTensor::GetValue replaced with LocalTensor::GetValue (UB reads)
+ *   - xyzGm.GetValue → xyz.GetValue (already in UB from initial DataCopy)
+ *   - scratchGm.GetValue → dist.GetValue / red.GetValue (already in UB)
+ *   - Cross-core argmax: resultsGm.GetValue → DataCopy(GM→UB) + UB scan
+ *   - SyncAll() no-args → SyncAll(syncGm, syncLocal, NUM_CORES)
+ *   - scratch GM writes removed (no longer needed for local reads)
+ *
+ * Based on verified findings:
+ *   - GetValue(GlobalTensor) is unreliable on 310P3 multi-core
+ *   - GetValue(LocalTensor) reads from UB (on-chip) — reliable
+ *   - DataCopy(GM→UB) + SyncAll is reliable (8/8 PASS in getval test)
  *
  * 10 checkpoints per (core, iter), stride 16:
  *   CP0: distInit    — 1e10 (j==1) or distPostVal (j>1)
@@ -29,22 +37,21 @@ constexpr int32_t BLOCKS_PER_CORE = CHUNK / BLOCK_SIZE;
 constexpr int32_t DEBUG_ITERS = 3;
 constexpr int32_t ACTUAL_FIELDS = 10;
 constexpr int32_t DIAG_FIELDS = 16;  // DataCopy needs multiple of 8
-constexpr int32_t SCRATCH_PER_CORE = 64;
+constexpr int32_t SYNCALL_PER_CORE = 8;
 
 class KernelFpsMultiCoreV3Debug {
 public:
     __aicore__ inline void Init(GM_ADDR xyz, GM_ADDR idx, GM_ADDR results,
-                                GM_ADDR debug, GM_ADDR scratch)
+                                GM_ADDR debug, GM_ADDR scratch, GM_ADDR sync)
     {
         coreId = AscendC::GetBlockIdx();
         pointOffset = coreId * CHUNK;
-        scratchOff = coreId * SCRATCH_PER_CORE;
 
         xyzGm.SetGlobalBuffer((__gm__ float *)xyz, 3 * N);
         idxGm.SetGlobalBuffer((__gm__ int32_t *)idx, NPOINTS);
         resultsGm.SetGlobalBuffer((__gm__ float *)results, NUM_CORES * CHUNK);
         debugGm.SetGlobalBuffer((__gm__ float *)debug, NUM_CORES * DIAG_FIELDS * DEBUG_ITERS);
-        scratchGm.SetGlobalBuffer((__gm__ float *)scratch, NUM_CORES * SCRATCH_PER_CORE);
+        syncGm.SetGlobalBuffer((__gm__ int32_t *)sync, NUM_CORES * SYNCALL_PER_CORE);
 
         pipe.InitBuffer(xyzBuf, 3 * N * sizeof(float));
         pipe.InitBuffer(distBuf, CHUNK * sizeof(float));
@@ -53,6 +60,8 @@ public:
         pipe.InitBuffer(blkBuf, BLOCK_SIZE * sizeof(float));
         pipe.InitBuffer(redBuf, BLOCK_SIZE * sizeof(float));
         pipe.InitBuffer(dbgBuf, DIAG_FIELDS * sizeof(float));
+        pipe.InitBuffer(syncBuf, NUM_CORES * SYNCALL_PER_CORE * sizeof(int32_t));
+        pipe.InitBuffer(crossBuf, NUM_CORES * 8 * sizeof(float));
     }
 
     __aicore__ inline void Process()
@@ -63,6 +72,8 @@ public:
         auto tmp = tmpBuf.Get<float>();
         auto blk = blkBuf.Get<float>();
         auto red = redBuf.Get<float>();
+        auto syncLocal = syncBuf.Get<int32_t>();
+        auto cross = crossBuf.Get<float>();
 
         AscendC::DataCopy(xyz, xyzGm, 3 * N);
         pipe_barrier(PIPE_V);
@@ -76,9 +87,10 @@ public:
         int32_t old = 0;
 
         for (int32_t j = 1; j < NPOINTS; j++) {
-            float x1 = xyzGm.GetValue(old);
-            float y1 = xyzGm.GetValue(N + old);
-            float z1 = xyzGm.GetValue(2 * N + old);
+            // Read current point coords from UB (already copied at init)
+            float x1 = xyz.GetValue(old);
+            float y1 = xyz.GetValue(N + old);
+            float z1 = xyz.GetValue(2 * N + old);
 
             for (int32_t b = 0; b < BLOCKS_PER_CORE; b++) {
                 int32_t localBase = b * BLOCK_SIZE;
@@ -102,58 +114,56 @@ public:
             }
             pipe_barrier(PIPE_V);
 
-            // dist → scratch GM for scalar reads
-            AscendC::DataCopy(scratchGm[scratchOff], dist, 8);
-            pipe_barrier(PIPE_V);
-
-            float distPostVal = scratchGm.GetValue(scratchOff);
-            float cksum = scratchGm.GetValue(scratchOff)
-                        + scratchGm.GetValue(scratchOff + 1)
-                        + scratchGm.GetValue(scratchOff + 2)
-                        + scratchGm.GetValue(scratchOff + 3);
+            // Read dist from UB directly (no scratch GM round-trip)
+            float distPostVal = dist.GetValue(0);
+            float cksum = dist.GetValue(0) + dist.GetValue(1)
+                        + dist.GetValue(2) + dist.GetValue(3);
 
             AscendC::WholeReduceMax<float>(red, dist, 64, BLOCKS_PER_CORE, 1, 1, 8);
             pipe_barrier(PIPE_V);
 
-            // reduce → scratch GM for scalar reads
-            AscendC::DataCopy(scratchGm[scratchOff], red, 8);
-            pipe_barrier(PIPE_V);
+            // Read reduce results from UB directly
+            float red0Val = red.GetValue(0);
+            float red0Idx = red.GetValue(1);
+            float red1Val = red.GetValue(2);
+            float red1Idx = red.GetValue(3);
 
-            float red0Val = scratchGm.GetValue(scratchOff);
-            float red0Idx = scratchGm.GetValue(scratchOff + 1);
-            float red1Val = scratchGm.GetValue(scratchOff + 2);
-            float red1Idx = scratchGm.GetValue(scratchOff + 3);
-
-            // Local argmax scan from scratch GM
+            // Local argmax scan from UB
             float localBestVal = -1.0f;
             int32_t localBestIdx = 0;
             for (int32_t b = 0; b < BLOCKS_PER_CORE; b++) {
-                float val = scratchGm.GetValue(scratchOff + b * 2);
+                float val = red.GetValue(b * 2);
                 if (val > localBestVal) {
                     localBestVal = val;
-                    float idxFloat = scratchGm.GetValue(scratchOff + b * 2 + 1);
+                    float idxFloat = red.GetValue(b * 2 + 1);
                     int32_t idxInBlock = *reinterpret_cast<uint32_t *>(&idxFloat);
                     localBestIdx = pointOffset + b * BLOCK_SIZE + idxInBlock;
                 }
             }
 
-            // Write local result to results GM for cross-core argmax
+            // Write local result to results GM
             AscendC::Duplicate(dist, localBestVal, 1);
             AscendC::Duplicate(dist[1], *reinterpret_cast<float *>(&localBestIdx), 1);
             pipe_barrier(PIPE_V);
             AscendC::DataCopy(resultsGm[coreId * CHUNK], dist, CHUNK);
             pipe_barrier(PIPE_V);
 
-            AscendC::SyncAll();
+            // SyncAll: ensure all cores' writes to resultsGm are visible
+            AscendC::SyncAll(syncGm, syncLocal, NUM_CORES);
 
-            // Cross-core argmax from resultsGm
+            // Cross-core argmax: DataCopy(GM→UB) then scan UB
+            for (int32_t c = 0; c < NUM_CORES; c++) {
+                AscendC::DataCopy(cross + c * 8, resultsGm[c * CHUNK], 8);
+            }
+            pipe_barrier(PIPE_V);
+
             float globalBestVal = -1.0f;
             int32_t globalBestIdx = 0;
             for (int32_t c = 0; c < NUM_CORES; c++) {
-                float val = resultsGm.GetValue(c * CHUNK);
+                float val = cross.GetValue(c * 8);
                 if (val > globalBestVal) {
                     globalBestVal = val;
-                    float idxFloat = resultsGm.GetValue(c * CHUNK + 1);
+                    float idxFloat = cross.GetValue(c * 8 + 1);
                     globalBestIdx = *reinterpret_cast<uint32_t *>(&idxFloat);
                 }
             }
@@ -197,7 +207,6 @@ public:
 private:
     int32_t coreId;
     int32_t pointOffset;
-    int32_t scratchOff;
     AscendC::TPipe pipe;
     AscendC::TBuf<AscendC::TPosition::VECIN> xyzBuf;
     AscendC::TBuf<AscendC::TPosition::VECIN> distBuf;
@@ -206,17 +215,19 @@ private:
     AscendC::TBuf<AscendC::TPosition::VECIN> blkBuf;
     AscendC::TBuf<AscendC::TPosition::VECIN> redBuf;
     AscendC::TBuf<AscendC::TPosition::VECIN> dbgBuf;
+    AscendC::TBuf<AscendC::TPosition::VECIN> syncBuf;
+    AscendC::TBuf<AscendC::TPosition::VECIN> crossBuf;
     AscendC::GlobalTensor<float> xyzGm;
     AscendC::GlobalTensor<int32_t> idxGm;
     AscendC::GlobalTensor<float> resultsGm;
     AscendC::GlobalTensor<float> debugGm;
-    AscendC::GlobalTensor<float> scratchGm;
+    AscendC::GlobalTensor<int32_t> syncGm;
 };
 
 extern "C" __global__ __aicore__ void fps_custom_mc_v3_dbg(
-    GM_ADDR xyz, GM_ADDR idx, GM_ADDR results, GM_ADDR debug, GM_ADDR scratch)
+    GM_ADDR xyz, GM_ADDR idx, GM_ADDR results, GM_ADDR debug, GM_ADDR scratch, GM_ADDR sync)
 {
     KernelFpsMultiCoreV3Debug op;
-    op.Init(xyz, idx, results, debug, scratch);
+    op.Init(xyz, idx, results, debug, scratch, sync);
     op.Process();
 }
