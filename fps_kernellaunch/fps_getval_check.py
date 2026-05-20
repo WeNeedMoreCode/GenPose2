@@ -25,10 +25,15 @@ def run_getval_check():
         raise FileNotFoundError(f"{lib_path} not found. Build first.")
     lib = ctypes.CDLL(lib_path)
     lib.fps_run_getval_check.restype = ctypes.c_int
-    lib.fps_run_getval_check.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_int]
+    lib.fps_run_getval_check.argtypes = [
+        ctypes.POINTER(ctypes.c_float), ctypes.c_int,
+        ctypes.POINTER(ctypes.c_float), ctypes.c_int,
+    ]
 
     debug_host = (ctypes.c_float * DEBUG_SIZE)()
-    ret = lib.fps_run_getval_check(debug_host, DEBUG_SIZE)
+    INPUT_SIZE = NUM_CORES * 8
+    scratch_host = (ctypes.c_float * INPUT_SIZE)()
+    ret = lib.fps_run_getval_check(debug_host, DEBUG_SIZE, scratch_host, INPUT_SIZE)
     assert ret == 0, f"Kernel returned {ret}"
 
     vals = np.array([debug_host[i] for i in range(DEBUG_SIZE)], dtype=np.float32)
@@ -56,6 +61,20 @@ def run_getval_check():
               f"  {got_c:>13.1f}{ok_c:>4}({exp_c:>6.0f})")
 
     print(f"\nResult: {'ALL PASS' if all_ok else 'SOME FAILED'}")
+
+    # Host direct readback of scratch GM
+    scratch_vals = np.array([scratch_host[i] for i in range(INPUT_SIZE)], dtype=np.float32)
+    print("\n--- Host direct scratch GM readback (after kernel) ---")
+    scratch_ok = True
+    for core in range(NUM_CORES):
+        off = core * 8
+        got = scratch_vals[off]
+        exp = (core + 1) * 100.0
+        ok = "OK" if abs(got - exp) < 0.01 else "FAIL"
+        if ok != "OK":
+            scratch_ok = False
+        print(f"  Core {core}: got={got:.1f}  expect={exp:.0f}  ({ok})")
+    print(f"  Scratch GM: {'ALL PASS' if scratch_ok else 'SOME FAILED'}")
 
     # Diagnosis summary
     print("\n--- Diagnosis ---")

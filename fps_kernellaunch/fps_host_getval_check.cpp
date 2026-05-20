@@ -17,7 +17,8 @@ static void *g_input_buf = nullptr;
 static void *g_debug_buf = nullptr;
 static void *g_scratch_buf = nullptr;
 
-extern "C" int fps_run_getval_check(float *debug_host, int debug_host_size)
+extern "C" int fps_run_getval_check(float *debug_host, int debug_host_size,
+    float *scratch_host, int scratch_host_size)
 {
     fprintf(stderr, "[getval] Step 1: create stream\n");
     if (g_stream == nullptr) {
@@ -64,10 +65,12 @@ extern "C" int fps_run_getval_check(float *debug_host, int debug_host_size)
         ACL_MEMCPY_HOST_TO_DEVICE);
     fprintf(stderr, "[getval] H2D done\n");
 
-    fprintf(stderr, "[getval] Step 6: memset debug to 0xFF\n");
+    fprintf(stderr, "[getval] Step 6: memset debug and scratch to known pattern\n");
     aclrtMemset(g_debug_buf, DEBUG_SIZE * sizeof(float), 0xFF, DEBUG_SIZE * sizeof(float));
+    aclrtMemset(g_scratch_buf, INPUT_SIZE * sizeof(float), 0xAA, INPUT_SIZE * sizeof(float));
 
     fprintf(stderr, "[getval] Step 7: launch kernel (blockDim=%u)\n", NUM_CORES);
+    fprintf(stderr, "[getval]   input=%p debug=%p scratch=%p\n", g_input_buf, g_debug_buf, g_scratch_buf);
     uint32_t launch_ret = aclrtlaunch_fps_custom_getval_check(NUM_CORES, g_stream,
         g_input_buf, nullptr, nullptr, g_debug_buf, g_scratch_buf);
     fprintf(stderr, "[getval] aclrtlaunch ret = %u\n", launch_ret);
@@ -75,6 +78,19 @@ extern "C" int fps_run_getval_check(float *debug_host, int debug_host_size)
     fprintf(stderr, "[getval] Step 8: sync stream\n");
     aclError sync_ret = aclrtSynchronizeStream(g_stream);
     fprintf(stderr, "[getval] aclrtSynchronizeStream ret = %d\n", (int)sync_ret);
+
+    // Read scratch GM directly from host (bypass kernel reads)
+    if (scratch_host != nullptr && scratch_host_size >= (int)INPUT_SIZE) {
+        fprintf(stderr, "[getval] Step 9: read scratch GM D2H (%u floats)\n", INPUT_SIZE);
+        aclrtMemcpy(scratch_host, INPUT_SIZE * sizeof(float),
+            g_scratch_buf, INPUT_SIZE * sizeof(float),
+            ACL_MEMCPY_DEVICE_TO_HOST);
+        fprintf(stderr, "[getval] scratch raw:");
+        for (int i = 0; i < 16 && i < scratch_host_size; i++) {
+            fprintf(stderr, " %.1f", scratch_host[i]);
+        }
+        fprintf(stderr, "\n");
+    }
 
     if (debug_host != nullptr && debug_host_size >= (int)DEBUG_SIZE) {
         fprintf(stderr, "[getval] Step 9: memcpy D2H\n");
