@@ -62,6 +62,7 @@ public:
         pipe.InitBuffer(dbgBuf, DIAG_FIELDS * sizeof(float));
         pipe.InitBuffer(syncBuf, NUM_CORES * SYNCALL_PER_CORE * sizeof(int32_t));
         pipe.InitBuffer(crossBuf, NUM_CORES * CHUNK * sizeof(float));
+        pipe.InitBuffer(stageBuf, 8 * sizeof(float));
     }
 
     __aicore__ inline void Process()
@@ -141,11 +142,12 @@ public:
                 }
             }
 
-            // Write local result to results GM
-            AscendC::Duplicate(dist, localBestVal, 1);
-            AscendC::Duplicate(dist[1], *reinterpret_cast<float *>(&localBestIdx), 1);
+            // Write local result to results GM (via stageBuf, NOT dist!)
+            auto stage = stageBuf.Get<float>();
+            AscendC::Duplicate(stage, localBestVal, 1);
+            AscendC::Duplicate(stage[1], *reinterpret_cast<float *>(&localBestIdx), 1);
             pipe_barrier(PIPE_V);
-            AscendC::DataCopy(resultsGm[coreId * CHUNK], dist, CHUNK);
+            AscendC::DataCopy(resultsGm[coreId * CHUNK], stage, 8);
             pipe_barrier(PIPE_V);
 
             // SyncAll: ensure all cores' writes to resultsGm are visible
@@ -190,9 +192,6 @@ public:
                 idxLocal.SetValue(j, globalBestIdx);
             }
             old = globalBestIdx;
-
-            AscendC::Duplicate(dist, 1e10f, 1);
-            AscendC::Duplicate(dist[1], 1e10f, 1);
         }
 
         pipe_barrier(PIPE_V);
@@ -215,6 +214,7 @@ private:
     AscendC::TBuf<AscendC::TPosition::VECIN> dbgBuf;
     AscendC::TBuf<AscendC::TPosition::VECIN> syncBuf;
     AscendC::TBuf<AscendC::TPosition::VECIN> crossBuf;
+    AscendC::TBuf<AscendC::TPosition::VECIN> stageBuf;
     AscendC::GlobalTensor<float> xyzGm;
     AscendC::GlobalTensor<int32_t> idxGm;
     AscendC::GlobalTensor<float> resultsGm;
