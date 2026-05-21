@@ -2,28 +2,17 @@
 Full comparison: PyTorch vs 1-core AscendC vs 8-core AscendC.
 Multiple verification dimensions, raw value display at the end.
 """
-import ctypes
-import os
 import numpy as np
 import torch
 import torch_npu  # noqa: F401
 import pointnet2_ops
 
+from fps_wrapper import FurthestPointSamplingAscendC, FurthestPointSamplingMultiCore
+
 torch.npu.set_device(0)
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 N = 1024
 NPOINTS = 512
-NUM_CORES = 8
-
-
-def _load_lib(name):
-    lib_path = os.path.join(SCRIPT_DIR, "out", "lib", name)
-    if not os.path.exists(lib_path):
-        lib_path = os.path.join(SCRIPT_DIR, name)
-    if not os.path.exists(lib_path):
-        raise FileNotFoundError(f"{name} not found. Build first.")
-    return ctypes.CDLL(lib_path)
 
 
 def run_pytorch_fps(xyz):
@@ -31,32 +20,20 @@ def run_pytorch_fps(xyz):
 
 
 def run_1core_fps(xyz_t):
-    lib = _load_lib("libfps_host.so")
-    lib.fps_run_device.restype = ctypes.c_int
-    lib.fps_run_device.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    idx = torch.zeros(NPOINTS, device='npu:0', dtype=torch.int32)
-    torch.npu.synchronize()
-    ret = lib.fps_run_device(ctypes.c_void_p(xyz_t.data_ptr()), ctypes.c_void_p(idx.data_ptr()))
-    assert ret == 0, f"1-core ret={ret}"
-    return idx.cpu().numpy().astype(np.int64)
+    fps = FurthestPointSamplingAscendC()
+    xyz_4d = xyz_t.reshape(1, -1)  # wrapper expects [B, 3*N]
+    # wrapper does permute internally, but xyz_t is already transposed, so pass directly
+    # actually wrapper expects [B, N, 3], so reconstruct
+    xyz_in = xyz_t.reshape(1, 3, N).permute(0, 2, 1).contiguous()  # back to [1, N, 3]
+    idx = fps(xyz_in, NPOINTS)
+    return idx[0].cpu().numpy().astype(np.int64)
 
 
 def run_8core_fps(xyz_t):
-    lib = _load_lib("libfps_host_mc_v3_dbg.so")
-    lib.fps_run_mc_v3_dbg.restype = ctypes.c_int
-    lib.fps_run_mc_v3_dbg.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_int,
-    ]
-    idx = torch.zeros(NPOINTS, device='npu:0', dtype=torch.int32)
-    debug_size = NUM_CORES * 16 * 3
-    debug_host = (ctypes.c_float * debug_size)()
-    torch.npu.synchronize()
-    ret = lib.fps_run_mc_v3_dbg(
-        ctypes.c_void_p(xyz_t.data_ptr()), ctypes.c_void_p(idx.data_ptr()),
-        debug_host, debug_size,
-    )
-    assert ret == 0, f"8-core ret={ret}"
-    return idx.cpu().numpy().astype(np.int64)
+    fps = FurthestPointSamplingMultiCore()
+    xyz_in = xyz_t.reshape(1, 3, N).permute(0, 2, 1).contiguous()  # back to [1, N, 3]
+    idx = fps(xyz_in, NPOINTS)
+    return idx[0].cpu().numpy().astype(np.int64)
 
 
 def main():
