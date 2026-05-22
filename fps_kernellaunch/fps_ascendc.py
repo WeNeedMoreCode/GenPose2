@@ -37,6 +37,19 @@ def _load_lib(name):
     return ctypes.CDLL(lib_path)
 
 
+def _get_npu_stream():
+    """Get raw aclrtStream pointer from torch.npu."""
+    stream = torch.npu.current_stream()
+    # stream.stream is a property returning int (raw pointer), or method
+    raw = getattr(stream, 'stream', None)
+    if callable(raw):
+        raw = raw()
+    if raw is None or raw == 0:
+        return None
+    print(f"[fps_ascendc] NPU stream pointer: {hex(raw)}")
+    return raw
+
+
 class FurthestPointSamplingAscendC:
     """Multi-core AscendC FPS kernel with dynamic shape support."""
 
@@ -58,7 +71,8 @@ class FurthestPointSamplingAscendC:
 
         xyz_t = xyz.permute(0, 2, 1).contiguous().reshape(B, -1)
         idx = torch.zeros(B, npoints, dtype=torch.int32, device=xyz.device)
-        stream = torch.npu.current_stream().stream()
+
+        stream_ptr = _get_npu_stream()
 
         for b in range(B):
             ret = self.lib.fps_run_dynamic(
@@ -67,7 +81,7 @@ class FurthestPointSamplingAscendC:
                 ctypes.c_int32(N),
                 ctypes.c_int32(npoints),
                 ctypes.c_int32(self.num_cores),
-                ctypes.c_void_p(stream),
+                ctypes.c_void_p(stream_ptr) if stream_ptr else ctypes.c_void_p(0),
             )
             assert ret == 0, f"fps_run_dynamic failed for batch {b}: ret={ret}"
 
@@ -82,6 +96,14 @@ def patch_pointnet2_fps(num_cores=8):
     if _patched:
         return
     kernel = FurthestPointSamplingAscendC(num_cores=num_cores)
+
+    # Quick self-test
+    print("[fps_ascendc] Running self-test...")
+    test_xyz = torch.randn(1, 1024, 3, device='npu:0', dtype=torch.float32)
+    test_idx = kernel(test_xyz, 512)
+    assert test_idx.shape == (1, 512), f"Self-test failed: shape={test_idx.shape}"
+    print(f"[fps_ascendc] Self-test passed: {test_idx.shape}")
+
     from networks.pts_encoder.pointnet2_utils.pointnet2 import pointnet2_utils
     pointnet2_utils.furthest_point_sample = kernel
     _patched = True

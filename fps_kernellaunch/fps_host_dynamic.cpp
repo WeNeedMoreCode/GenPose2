@@ -19,16 +19,24 @@ static void *g_scratch_buf = nullptr;
 static void *g_sync_buf = nullptr;
 static void *g_tiling_buf = nullptr;
 
-static void ensure_buf(void **buf, int32_t size) {
+static bool ensure_buf(void **buf, int32_t size) {
     if (*buf == nullptr) {
-        aclrtMalloc(buf, size, ACL_MEM_MALLOC_HUGE_FIRST);
+        aclError ret = aclrtMalloc(buf, size, ACL_MEM_MALLOC_HUGE_FIRST);
+        if (ret != ACL_SUCCESS) {
+            fprintf(stderr, "[fps_dynamic] aclrtMalloc failed: ret=%d, size=%d\n", (int)ret, size);
+            return false;
+        }
     }
+    return true;
 }
 
 extern "C" int fps_run_dynamic(void *xyz_ptr, void *idx_ptr,
                                 int32_t total_n, int32_t npoints, int32_t num_cores,
                                 void *stream_ptr)
 {
+    fprintf(stderr, "[fps_dynamic] called: N=%d, npoints=%d, cores=%d, stream_ptr=%p\n",
+            total_n, npoints, num_cores, stream_ptr);
+
     if (total_n <= 0 || npoints <= 0 || num_cores <= 0) {
         fprintf(stderr, "[fps_dynamic] invalid params: N=%d, npoints=%d, cores=%d\n",
                 total_n, npoints, num_cores);
@@ -43,9 +51,11 @@ extern "C" int fps_run_dynamic(void *xyz_ptr, void *idx_ptr,
                 fprintf(stderr, "[fps_dynamic] aclrtCreateStream failed: %d\n", (int)ret);
                 return -2;
             }
-            fprintf(stderr, "[fps_dynamic] stream created\n");
+            fprintf(stderr, "[fps_dynamic] created own stream=%p\n", g_stream);
         }
         stream = g_stream;
+    } else {
+        fprintf(stderr, "[fps_dynamic] using provided stream=%p\n", stream);
     }
 
     // Cap num_cores so chunk >= BLOCK_SIZE (hardware vector length)
@@ -69,11 +79,14 @@ extern "C" int fps_run_dynamic(void *xyz_ptr, void *idx_ptr,
         return -4;
     }
 
-    // Allocate persistent buffers at max size (safe for any shape/core combination)
-    ensure_buf(&g_results_buf, MAX_CORES * (MAX_N / MAX_CORES) * sizeof(float));
-    ensure_buf(&g_scratch_buf, MAX_CORES * 64 * sizeof(float));
-    ensure_buf(&g_sync_buf, MAX_CORES * 8 * sizeof(int32_t));
-    ensure_buf(&g_tiling_buf, 8 * sizeof(int32_t));
+    // Allocate persistent buffers at max size
+    if (!ensure_buf(&g_results_buf, MAX_CORES * (MAX_N / MAX_CORES) * sizeof(float))) return -7;
+    if (!ensure_buf(&g_scratch_buf, MAX_CORES * 64 * sizeof(float))) return -7;
+    if (!ensure_buf(&g_sync_buf, MAX_CORES * 8 * sizeof(int32_t))) return -7;
+    if (!ensure_buf(&g_tiling_buf, 8 * sizeof(int32_t))) return -7;
+
+    fprintf(stderr, "[fps_dynamic] buffers: xyz=%p idx=%p results=%p scratch=%p sync=%p tiling=%p\n",
+            xyz_ptr, idx_ptr, g_results_buf, g_scratch_buf, g_sync_buf, g_tiling_buf);
 
     // Prepare tiling data
     FpsTilingData tiling;
@@ -83,6 +96,12 @@ extern "C" int fps_run_dynamic(void *xyz_ptr, void *idx_ptr,
     tiling.chunk = chunk;
     tiling.blocksPerCore = blocks_per_core;
 
+    fprintf(stderr, "[fps_dynamic] tiling: N=%d np=%d cores=%d chunk=%d bpc=%d\n",
+            tiling.totalN, tiling.npoints, tiling.numCores, tiling.chunk, tiling.blocksPerCore);
+
+    // Full device sync before launching — avoid conflicts with PyTorch operations
+    aclrtSynchronizeDevice();
+
     aclError ret = aclrtMemcpy(g_tiling_buf, sizeof(FpsTilingData),
                                 &tiling, sizeof(FpsTilingData),
                                 ACL_MEMCPY_HOST_TO_DEVICE);
@@ -91,6 +110,7 @@ extern "C" int fps_run_dynamic(void *xyz_ptr, void *idx_ptr,
         return -5;
     }
 
+    fprintf(stderr, "[fps_dynamic] launching kernel on stream=%p...\n", stream);
     aclrtlaunch_fps_custom_dynamic(num_cores, stream,
         xyz_ptr, idx_ptr, g_results_buf, g_scratch_buf, g_sync_buf, g_tiling_buf);
 
@@ -100,5 +120,6 @@ extern "C" int fps_run_dynamic(void *xyz_ptr, void *idx_ptr,
         return -6;
     }
 
+    fprintf(stderr, "[fps_dynamic] done\n");
     return 0;
 }
