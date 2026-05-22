@@ -7,7 +7,7 @@ import torch
 import torch_npu  # noqa: F401
 import pointnet2_ops
 
-from fps_wrapper import FurthestPointSamplingAscendC, FurthestPointSamplingMultiCore
+from fps_ascendc import FurthestPointSamplingAscendC, FurthestPointSamplingMultiCore
 
 torch.npu.set_device(0)
 
