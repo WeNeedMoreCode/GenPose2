@@ -39,15 +39,21 @@ def _load_lib(name):
 
 def _get_npu_stream():
     """Get raw aclrtStream pointer from torch.npu."""
-    stream = torch.npu.current_stream()
-    # stream.stream is a property returning int (raw pointer), or method
-    raw = getattr(stream, 'stream', None)
-    if callable(raw):
-        raw = raw()
-    if raw is None or raw == 0:
-        return None
-    print(f"[fps_ascendc] NPU stream pointer: {hex(raw)}")
-    return raw
+    s = torch.npu.current_stream()
+    # First call: print diagnostics
+    if not getattr(_get_npu_stream, '_diag_done', False):
+        _get_npu_stream._diag_done = True
+        attrs = [x for x in dir(s) if not x.startswith('__')]
+        print(f"[fps_ascendc] Stream type={type(s).__name__}, attrs={attrs}")
+        for a in ['stream', '_stream', 'stream_id', '_cstream', 'npu_stream']:
+            print(f"[fps_ascendc]   .{a} = {getattr(s, a, '<missing>')!r}")
+    for attr in ['stream', '_stream', 'npu_stream', '_cstream']:
+        val = getattr(s, attr, None)
+        if callable(val):
+            val = val()
+        if isinstance(val, int) and val != 0:
+            return val
+    return None
 
 
 class FurthestPointSamplingAscendC:
