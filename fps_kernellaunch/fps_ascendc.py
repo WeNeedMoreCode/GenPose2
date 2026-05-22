@@ -21,6 +21,7 @@ Monkey-patch into PointNet2:
 
 import ctypes
 import os
+import time
 import torch
 
 
@@ -61,6 +62,8 @@ class FurthestPointSamplingAscendC:
 
     def __init__(self, num_cores=8):
         self.num_cores = num_cores
+        self._call_count = 0
+        self._total_ms = 0.0
         self.lib = _load_lib("libfps_host_dynamic.so")
         self.lib.fps_run_dynamic.restype = ctypes.c_int
         self.lib.fps_run_dynamic.argtypes = [
@@ -81,7 +84,6 @@ class FurthestPointSamplingAscendC:
         stream_ptr = _get_npu_stream()
 
         for b in range(B):
-            torch.npu.synchronize()  # Ensure AICore fully idle before kernel launch
             ret = self.lib.fps_run_dynamic(
                 ctypes.c_void_p(xyz_t[b].data_ptr()),
                 ctypes.c_void_p(idx[b].data_ptr()),

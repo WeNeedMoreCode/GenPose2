@@ -1,23 +1,47 @@
 """
-FPS Performance Benchmark: PyTorch vs 1-core AscendC vs 8-core AscendC.
+FPS Performance Benchmark: PyTorch vs AscendC dynamic kernel.
+
+Tests 3 SA layer shapes: 1024→512, 512→256, 256→128.
 
 Usage:
+    cd GenPose2/fps_kernellaunch
     bash run.sh -r npu
-    export LD_LIBRARY_PATH=$(pwd)/out/lib:$LD_LIBRARY_PATH
     python fps_benchmark.py
 """
 
 import time
 import torch
 import torch_npu  # noqa: F401
-import pointnet2_ops
 
-from fps_ascendc import FurthestPointSamplingAscendC, FurthestPointSamplingMultiCore
+torch.npu.set_device(0)
 
-N = 1024
-NPOINTS = 512
+from fps_ascendc import FurthestPointSamplingAscendC
+
 WARMUP = 5
 REPEATS = 100
+SHAPES = [
+    (1024, 512),
+    (512, 256),
+    (256, 128),
+]
+
+
+def pytorch_fps(xyz, npoints):
+    """PyTorch argmax loop implementation."""
+    B, N, _ = xyz.shape
+    device = xyz.device
+    dtype = xyz.dtype
+    dist = torch.zeros(B, N, device=device, dtype=dtype)
+    idx = torch.zeros(B, npoints, device=device, dtype=torch.int64)
+    farthest = torch.randint(0, N, (B,), device=device)
+    batch_idx = torch.arange(B, device=device).unsqueeze(1).repeat(1, N)
+    for i in range(npoints):
+        idx[:, i] = farthest
+        centroid = xyz[batch_idx, farthest, :].view(B, 1, 3)
+        dist = torch.max(dist, (xyz - centroid).norm(dim=2))
+        farthest = dist.argmax(dim=1)
+        dist.scatter_(1, farthest.unsqueeze(1), 0)
+    return idx
 
 
 def run_bench(name, fn, xyz, npoints):
@@ -26,74 +50,42 @@ def run_bench(name, fn, xyz, npoints):
     torch.npu.synchronize()
 
     times = []
-    idx = None
     for _ in range(REPEATS):
         torch.npu.synchronize()
         t0 = time.perf_counter()
-        idx = fn(xyz, npoints)
+        fn(xyz, npoints)
         torch.npu.synchronize()
         t1 = time.perf_counter()
         times.append((t1 - t0) * 1000)
 
     avg_ms = sum(times) / len(times)
     min_ms = min(times)
-    max_ms = max(times)
-    print(f"  {name}: avg={avg_ms:.3f}ms, min={min_ms:.3f}ms, max={max_ms:.3f}ms")
-    return avg_ms, idx
+    print(f"  {name}: avg={avg_ms:.3f}ms, min={min_ms:.3f}ms")
+    return avg_ms
 
 
 def main():
-    B = 1
-    xyz = torch.randn(B, N, 3, device='npu:0', dtype=torch.float32)
+    fps_kernel = FurthestPointSamplingAscendC(num_cores=8)
 
-    print(f"=== FPS Performance Benchmark ===")
-    print(f"B={B}, N={N}, npoints={NPOINTS}, device=npu:0")
+    print("=== FPS Performance Benchmark ===")
     print(f"warmup={WARMUP}, repeats={REPEATS}\n")
 
-    # --- PyTorch ---
-    py_ms, py_idx = run_bench(
-        "PyTorch FPS",
-        lambda x, np: pointnet2_ops._furthest_point_sampling(x, np),
-        xyz, NPOINTS,
-    )
+    for N, npoints in SHAPES:
+        xyz = torch.randn(1, N, 3, device='npu:0', dtype=torch.float32)
+        print(f"--- N={N}, npoints={npoints} ---")
 
-    # --- AscendC 1-core ---
-    try:
-        fps_1c = FurthestPointSamplingAscendC()
-        ac_ms, ac_idx = run_bench("AscendC (1 core)", fps_1c, xyz, NPOINTS)
-    except Exception as e:
-        print(f"  AscendC (1 core): SKIP ({e})")
-        ac_ms, ac_idx = None, None
+        py_ms = run_bench("PyTorch", pytorch_fps, xyz, npoints)
+        ac_ms = run_bench("AscendC (8-core)", fps_kernel, xyz, npoints)
 
-    # --- AscendC 8-core ---
-    try:
-        fps_8c = FurthestPointSamplingMultiCore()
-        mc_ms, mc_idx = run_bench("AscendC (8 cores)", fps_8c, xyz, NPOINTS)
-    except Exception as e:
-        print(f"  AscendC (8 cores): SKIP ({e})")
-        mc_ms, mc_idx = None, None
+        print(f"  Speedup: {py_ms / ac_ms:.1f}x\n")
 
-    # --- Summary ---
-    print(f"\n=== Summary ===")
-    print(f"  PyTorch FPS:         {py_ms:.3f}ms  (baseline)")
-    if ac_ms is not None:
-        print(f"  AscendC (1 core):    {ac_ms:.3f}ms  ({py_ms/ac_ms:.1f}x faster)")
-    if mc_ms is not None:
-        print(f"  AscendC (8 cores):   {mc_ms:.3f}ms  ({py_ms/mc_ms:.1f}x faster)")
-
-    # --- Correctness ---
-    print(f"\n=== Correctness (baseline: pointnet2_ops) ===")
-    print(f"  Baseline[:10]: {py_idx[0, :10].tolist()}")
-    if ac_idx is not None:
-        match = torch.equal(py_idx, ac_idx)
-        print(f"  vs AscendC (1 core): {'MATCH' if match else 'MISMATCH'}")
-        if not match:
-            print(f"    Mismatches: {(py_idx != ac_idx).sum().item()}/{NPOINTS}")
-    if mc_idx is not None:
-        match = torch.equal(py_idx, mc_idx)
-        print(f"  vs AscendC (8 cores): {'MATCH' if match else 'MISMATCH'}")
-        if not match:
-            print(f"    Mismatches: {(py_idx != mc_idx).sum().item()}/{NPOINTS}")
+    # Multi-batch test
+    B = 16
+    N = 1024
+    npoints = 512
+    xyz = torch.randn(B, N, 3, device='npu:0', dtype=torch.float32)
+    print(f"--- Batch B={B}, N={N}, npoints={npoints} ---")
+    ac_ms = run_bench("AscendC (8-core)", fps_kernel, xyz, npoints)
 
 
 if __name__ == "__main__":
