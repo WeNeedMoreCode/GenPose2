@@ -1,6 +1,7 @@
 /**
  * Host wrapper for dynamic-shape multi-core FPS kernel.
  * Accepts N and npoints as runtime parameters.
+ * stream_ptr: pass NULL to auto-create, or pass torch.npu.current_stream() pointer.
  */
 #include "acl/acl.h"
 #include "aclrtlaunch_fps_custom_dynamic.h"
@@ -25,7 +26,8 @@ static void ensure_buf(void **buf, int32_t size) {
 }
 
 extern "C" int fps_run_dynamic(void *xyz_ptr, void *idx_ptr,
-                                int32_t total_n, int32_t npoints, int32_t num_cores)
+                                int32_t total_n, int32_t npoints, int32_t num_cores,
+                                void *stream_ptr)
 {
     if (total_n <= 0 || npoints <= 0 || num_cores <= 0) {
         fprintf(stderr, "[fps_dynamic] invalid params: N=%d, npoints=%d, cores=%d\n",
@@ -33,13 +35,17 @@ extern "C" int fps_run_dynamic(void *xyz_ptr, void *idx_ptr,
         return -1;
     }
 
-    if (g_stream == nullptr) {
-        aclError ret = aclrtCreateStream(&g_stream);
-        if (ret != ACL_SUCCESS) {
-            fprintf(stderr, "[fps_dynamic] aclrtCreateStream failed: %d\n", (int)ret);
-            return -2;
+    aclrtStream stream = (aclrtStream)stream_ptr;
+    if (stream == nullptr) {
+        if (g_stream == nullptr) {
+            aclError ret = aclrtCreateStream(&g_stream);
+            if (ret != ACL_SUCCESS) {
+                fprintf(stderr, "[fps_dynamic] aclrtCreateStream failed: %d\n", (int)ret);
+                return -2;
+            }
+            fprintf(stderr, "[fps_dynamic] stream created\n");
         }
-        fprintf(stderr, "[fps_dynamic] stream created\n");
+        stream = g_stream;
     }
 
     // Cap num_cores so chunk >= BLOCK_SIZE (hardware vector length)
@@ -85,10 +91,10 @@ extern "C" int fps_run_dynamic(void *xyz_ptr, void *idx_ptr,
         return -5;
     }
 
-    aclrtlaunch_fps_custom_dynamic(num_cores, g_stream,
+    aclrtlaunch_fps_custom_dynamic(num_cores, stream,
         xyz_ptr, idx_ptr, g_results_buf, g_scratch_buf, g_sync_buf, g_tiling_buf);
 
-    ret = aclrtSynchronizeStream(g_stream);
+    ret = aclrtSynchronizeStream(stream);
     if (ret != ACL_SUCCESS) {
         fprintf(stderr, "[fps_dynamic] synchronize failed: %d\n", (int)ret);
         return -6;

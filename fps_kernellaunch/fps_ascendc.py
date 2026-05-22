@@ -47,6 +47,7 @@ class FurthestPointSamplingAscendC:
         self.lib.fps_run_dynamic.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p,
             ctypes.c_int32, ctypes.c_int32, ctypes.c_int32,
+            ctypes.c_void_p,
         ]
 
     @torch.no_grad()
@@ -57,7 +58,7 @@ class FurthestPointSamplingAscendC:
 
         xyz_t = xyz.permute(0, 2, 1).contiguous().reshape(B, -1)
         idx = torch.zeros(B, npoints, dtype=torch.int32, device=xyz.device)
-        torch.npu.synchronize()
+        stream = torch.npu.current_stream().stream()
 
         for b in range(B):
             ret = self.lib.fps_run_dynamic(
@@ -66,6 +67,7 @@ class FurthestPointSamplingAscendC:
                 ctypes.c_int32(N),
                 ctypes.c_int32(npoints),
                 ctypes.c_int32(self.num_cores),
+                ctypes.c_void_p(stream),
             )
             assert ret == 0, f"fps_run_dynamic failed for batch {b}: ret={ret}"
 
