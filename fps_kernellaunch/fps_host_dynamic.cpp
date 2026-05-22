@@ -9,6 +9,8 @@
 #include <cstdio>
 
 constexpr int32_t BLOCK_SIZE = 64;
+constexpr int32_t MAX_N = 1024;
+constexpr int32_t MAX_CORES = 8;
 
 static aclrtStream g_stream = nullptr;
 static void *g_results_buf = nullptr;
@@ -40,6 +42,13 @@ extern "C" int fps_run_dynamic(void *xyz_ptr, void *idx_ptr,
         fprintf(stderr, "[fps_dynamic] stream created\n");
     }
 
+    // Cap num_cores so chunk >= BLOCK_SIZE (hardware vector length)
+    int32_t max_cores = total_n / BLOCK_SIZE;
+    if (max_cores < 1) max_cores = 1;
+    if (num_cores > max_cores) {
+        num_cores = max_cores;
+    }
+
     int32_t chunk = total_n / num_cores;
     int32_t blocks_per_core = chunk / BLOCK_SIZE;
 
@@ -54,10 +63,10 @@ extern "C" int fps_run_dynamic(void *xyz_ptr, void *idx_ptr,
         return -4;
     }
 
-    // Allocate persistent buffers (only once)
-    ensure_buf(&g_results_buf, num_cores * chunk * sizeof(float));
-    ensure_buf(&g_scratch_buf, num_cores * 64 * sizeof(float));
-    ensure_buf(&g_sync_buf, num_cores * 8 * sizeof(int32_t));
+    // Allocate persistent buffers at max size (safe for any shape/core combination)
+    ensure_buf(&g_results_buf, MAX_CORES * (MAX_N / MAX_CORES) * sizeof(float));
+    ensure_buf(&g_scratch_buf, MAX_CORES * 64 * sizeof(float));
+    ensure_buf(&g_sync_buf, MAX_CORES * 8 * sizeof(int32_t));
     ensure_buf(&g_tiling_buf, 8 * sizeof(int32_t));
 
     // Prepare tiling data

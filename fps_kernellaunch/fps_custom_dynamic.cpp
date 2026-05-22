@@ -18,7 +18,10 @@ public:
     __aicore__ inline void Init(GM_ADDR xyz, GM_ADDR idx, GM_ADDR results,
                                 GM_ADDR scratch, GM_ADDR sync, GM_ADDR tiling)
     {
-        // Read tiling data: DataCopy(GM→UB) then read UB (GetValue GlobalTensor unreliable)
+        // Step 1: Allocate tiling buffer first (before using it)
+        pipe.InitBuffer(tilingTmpBuf, 8 * sizeof(int32_t));
+
+        // Step 2: Read tiling data — DataCopy(GM→UB) then read UB
         AscendC::GlobalTensor<int32_t> tilingGm;
         tilingGm.SetGlobalBuffer((__gm__ int32_t *)tiling, 8);
         auto tilingLocal = tilingTmpBuf.Get<int32_t>();
@@ -39,8 +42,7 @@ public:
         resultsGm.SetGlobalBuffer((__gm__ float *)results, numCores * chunk);
         syncGm.SetGlobalBuffer((__gm__ int32_t *)sync, numCores * 8);
 
-        // Allocate UB buffers — sized for actual shape (capped by MAX constants)
-        pipe.InitBuffer(tilingTmpBuf, 8 * sizeof(int32_t));
+        // Step 3: Allocate remaining UB buffers based on tiling
         pipe.InitBuffer(xyzBuf, 3 * totalN * sizeof(float));
         pipe.InitBuffer(distBuf, chunk * sizeof(float));
         pipe.InitBuffer(idxBuf, npoints * sizeof(int32_t));
