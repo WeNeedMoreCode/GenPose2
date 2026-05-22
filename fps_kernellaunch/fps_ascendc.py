@@ -81,6 +81,7 @@ class FurthestPointSamplingAscendC:
         stream_ptr = _get_npu_stream()
 
         for b in range(B):
+            torch.npu.synchronize()  # Ensure AICore fully idle before kernel launch
             ret = self.lib.fps_run_dynamic(
                 ctypes.c_void_p(xyz_t[b].data_ptr()),
                 ctypes.c_void_p(idx[b].data_ptr()),

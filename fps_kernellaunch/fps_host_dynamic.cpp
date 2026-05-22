@@ -99,15 +99,18 @@ extern "C" int fps_run_dynamic(void *xyz_ptr, void *idx_ptr,
     fprintf(stderr, "[fps_dynamic] tiling: N=%d np=%d cores=%d chunk=%d bpc=%d\n",
             tiling.totalN, tiling.npoints, tiling.numCores, tiling.chunk, tiling.blocksPerCore);
 
-    // Full device sync before launching — avoid conflicts with PyTorch operations
-    aclrtSynchronizeDevice();
-
     aclError ret = aclrtMemcpy(g_tiling_buf, sizeof(FpsTilingData),
                                 &tiling, sizeof(FpsTilingData),
                                 ACL_MEMCPY_HOST_TO_DEVICE);
     if (ret != ACL_SUCCESS) {
         fprintf(stderr, "[fps_dynamic] tiling H2D failed: %d\n", (int)ret);
         return -5;
+    }
+
+    // Clear sync buffer before launch (stale SyncAll flags may cause deadlock)
+    {
+        int32_t zeros[MAX_CORES * 8] = {0};
+        aclrtMemcpy(g_sync_buf, sizeof(zeros), zeros, sizeof(zeros), ACL_MEMCPY_HOST_TO_DEVICE);
     }
 
     fprintf(stderr, "[fps_dynamic] launching kernel on stream=%p...\n", stream);
