@@ -34,10 +34,10 @@ def pytorch_fps(xyz, npoints):
     dist = torch.zeros(B, N, device=device, dtype=dtype)
     idx = torch.zeros(B, npoints, device=device, dtype=torch.int64)
     farthest = torch.randint(0, N, (B,), device=device)
-    batch_idx = torch.arange(B, device=device).unsqueeze(1).repeat(1, N)
+    arange_b = torch.arange(B, device=device)
     for i in range(npoints):
         idx[:, i] = farthest
-        centroid = xyz[batch_idx, farthest, :].view(B, 1, 3)
+        centroid = xyz[arange_b, farthest, :].unsqueeze(1)  # [B, 1, 3]
         dist = torch.max(dist, (xyz - centroid).norm(dim=2))
         farthest = dist.argmax(dim=1)
         dist.scatter_(1, farthest.unsqueeze(1), 0)

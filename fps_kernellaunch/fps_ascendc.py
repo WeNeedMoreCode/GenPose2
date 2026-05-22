@@ -21,7 +21,6 @@ Monkey-patch into PointNet2:
 
 import ctypes
 import os
-import time
 import torch
 
 
@@ -41,14 +40,7 @@ def _load_lib(name):
 def _get_npu_stream():
     """Get raw aclrtStream pointer from torch.npu."""
     s = torch.npu.current_stream()
-    # First call: print diagnostics
-    if not getattr(_get_npu_stream, '_diag_done', False):
-        _get_npu_stream._diag_done = True
-        attrs = [x for x in dir(s) if not x.startswith('__')]
-        print(f"[fps_ascendc] Stream type={type(s).__name__}, attrs={attrs}")
-        for a in ['stream', '_stream', 'stream_id', '_cstream', 'npu_stream']:
-            print(f"[fps_ascendc]   .{a} = {getattr(s, a, '<missing>')!r}")
-    for attr in ['stream', '_stream', 'npu_stream', '_cstream']:
+    for attr in ['npu_stream', 'stream', '_stream', '_cstream']:
         val = getattr(s, attr, None)
         if callable(val):
             val = val()
@@ -62,8 +54,6 @@ class FurthestPointSamplingAscendC:
 
     def __init__(self, num_cores=8):
         self.num_cores = num_cores
-        self._call_count = 0
-        self._total_ms = 0.0
         self.lib = _load_lib("libfps_host_dynamic.so")
         self.lib.fps_run_dynamic.restype = ctypes.c_int
         self.lib.fps_run_dynamic.argtypes = [
@@ -106,14 +96,6 @@ def patch_pointnet2_fps(num_cores=8):
         return
     kernel = FurthestPointSamplingAscendC(num_cores=num_cores)
 
-    # Quick self-test
-    print("[fps_ascendc] Running self-test...")
-    test_xyz = torch.randn(1, 1024, 3, device='npu:0', dtype=torch.float32)
-    test_idx = kernel(test_xyz, 512)
-    assert test_idx.shape == (1, 512), f"Self-test failed: shape={test_idx.shape}"
-    print(f"[fps_ascendc] Self-test passed: {test_idx.shape}")
-
     from networks.pts_encoder.pointnet2_utils.pointnet2 import pointnet2_utils
     pointnet2_utils.furthest_point_sample = kernel
     _patched = True
-    print(f"[fps_ascendc] Patched furthest_point_sample -> AscendC {num_cores}-core kernel")

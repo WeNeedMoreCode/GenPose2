@@ -57,6 +57,10 @@ perf_stats = {
     'scale_samples': 0,
     'bbox_time': [],
     'bbox_samples': 0,
+    'fps_time': [],
+    'gather_time': [],
+    'ball_query_time': [],
+    'grouping_time': [],
 }
 
 
@@ -637,6 +641,37 @@ def print_performance_stats():
             print(f"  FPS: {fps:.3f}")
             print(f"  Avg latency per sample: {1000/fps if fps > 0 else 0:.2f}ms")
 
+    # Custom op timing (inside Score Network / PointNet2)
+    custom_ops = [
+        ('FPS (furthest_point_sample)', 'fps_time'),
+        ('Gather (gather_operation)', 'gather_time'),
+        ('Ball Query (ball_query)', 'ball_query_time'),
+        ('Grouping (grouping_operation)', 'grouping_time'),
+    ]
+    has_custom_op_data = any(len(perf_stats[k]) > 0 for _, k in custom_ops)
+    score_total = sum(perf_stats['score_time']) if perf_stats['score_time'] else 0
+    energy_total = sum(perf_stats['energy_time']) if perf_stats['energy_time'] else 0
+    score_energy_total = score_total + energy_total
+    if has_custom_op_data:
+        print(f"\n{'='*60}")
+        print("Custom Op Timing (inside PointNet2)")
+        print("  Note: PointNet2 is called in both Score and Energy stages")
+        print("="*60)
+        op_total_all = 0
+        for op_name, time_key in custom_ops:
+            if len(perf_stats[time_key]) > 0:
+                times = perf_stats[time_key]
+                total = sum(times)
+                op_total_all += total
+                avg_ms = total / len(times) * 1000
+                pct = (total / score_energy_total * 100) if score_energy_total > 0 else 0
+                print(f"  {op_name}:")
+                print(f"    Calls: {len(times)}")
+                print(f"    Total: {total:.3f}s  ({pct:.1f}% of Score+Energy)")
+                print(f"    Avg: {avg_ms:.3f}ms")
+        if score_energy_total > 0:
+            print(f"\n  Four ops total: {op_total_all:.3f}s  ({op_total_all/score_energy_total*100:.1f}% of Score+Energy)")
+
     # Calculate overall statistics
     total_samples = perf_stats['score_samples']
     total_time = sum(perf_stats['score_time']) + sum(perf_stats.get('energy_time', [0])) + \
@@ -683,12 +718,39 @@ if __name__ == '__main__':
     score_save_path = f'results/evaluation_results/{cfg.result_dir}/score_prediction_{score_model_name}.pkl'
 
     is_om_model = cfg.pretrained_score_model_path.endswith('.om')
+    syx_fps = 1  # 1 = use AscendC FPS monkey-patch, 0 = use original FPS
+
     if not is_om_model:
         import torch_npu
         torch_npu.npu.set_compile_mode(jit_compile=False)
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'fps_kernellaunch'))
-        from fps_ascendc import patch_pointnet2_fps
-        patch_pointnet2_fps(num_cores=8)
+
+        if syx_fps:
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'fps_kernellaunch'))
+            from fps_ascendc import patch_pointnet2_fps
+            patch_pointnet2_fps(num_cores=8)
+            print(f"[syx_fps] AscendC FPS enabled (syx_fps={syx_fps})")
+        else:
+            print(f"[syx_fps] Using original FPS (syx_fps={syx_fps})")
+
+        # Wrap custom ops with timing instrumentation
+        from networks.pts_encoder.pointnet2_utils.pointnet2 import pointnet2_utils
+        _orig_fps = pointnet2_utils.furthest_point_sample
+        _orig_gather = pointnet2_utils.gather_operation
+        _orig_ball_query = pointnet2_utils.ball_query
+        _orig_grouping = pointnet2_utils.grouping_operation
+
+        def _timed_op(orig, key):
+            def wrapper(*args, **kwargs):
+                t0 = time.time()
+                result = orig(*args, **kwargs)
+                perf_stats[key].append(time.time() - t0)
+                return result
+            return wrapper
+
+        pointnet2_utils.furthest_point_sample = _timed_op(_orig_fps, 'fps_time')
+        pointnet2_utils.gather_operation = _timed_op(_orig_gather, 'gather_time')
+        pointnet2_utils.ball_query = _timed_op(_orig_ball_query, 'ball_query_time')
+        pointnet2_utils.grouping_operation = _timed_op(_orig_grouping, 'grouping_time')
     score_net = inference_score_decoupled(score_save_path)
     if is_om_model and score_net:
         score_net.release()
