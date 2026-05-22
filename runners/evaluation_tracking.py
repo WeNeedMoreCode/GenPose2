@@ -75,6 +75,9 @@ is_om_model = cfg.pretrained_score_model_path.endswith('.om')
 if not is_om_model:
     import torch_npu
     torch_npu.npu.set_compile_mode(jit_compile=False)
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'fps_kernellaunch'))
+    from fps_ascendc import patch_pointnet2_fps
+    patch_pointnet2_fps(num_cores=8)
     cfg.agent_type = 'score'
     score_agent = PoseNet(cfg)
     score_agent.load_ckpt(model_dir=cfg.pretrained_score_model_path, model_path=True, load_model_only=True)

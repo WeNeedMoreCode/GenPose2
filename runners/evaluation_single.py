@@ -686,6 +686,9 @@ if __name__ == '__main__':
     if not is_om_model:
         import torch_npu
         torch_npu.npu.set_compile_mode(jit_compile=False)
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'fps_kernellaunch'))
+        from fps_ascendc import patch_pointnet2_fps
+        patch_pointnet2_fps(num_cores=8)
     score_net = inference_score_decoupled(score_save_path)
     if is_om_model and score_net:
         score_net.release()
