@@ -38,7 +38,9 @@ def _load_lib(name):
 
 
 def _get_npu_stream():
-    """Get raw aclrtStream pointer from torch.npu."""
+    """Get raw aclrtStream pointer from torch.npu.
+    MUST succeed — creating a separate stream causes massive sync overhead.
+    """
     s = torch.npu.current_stream()
     for attr in ['npu_stream', 'stream', '_stream', '_cstream']:
         val = getattr(s, attr, None)
@@ -46,7 +48,11 @@ def _get_npu_stream():
             val = val()
         if isinstance(val, int) and val != 0:
             return val
-    return None
+    raise RuntimeError(
+        f"Cannot get NPU stream pointer from {type(s)}. "
+        f"Available attrs: {[a for a in dir(s) if not a.startswith('__')]}. "
+        f"This will cause severe performance degradation."
+    )
 
 
 class FurthestPointSamplingAscendC:

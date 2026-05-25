@@ -24,6 +24,7 @@ file(GLOB KERNEL_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/fps_custom_dup1_check.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/fps_custom_getval_check.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/fps_custom_dynamic.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/group_points_dynamic.cpp
 )
 
 if("${RUN_MODE}" STREQUAL "cpu")
@@ -182,6 +183,19 @@ if("${RUN_MODE}" STREQUAL "npu" OR "${RUN_MODE}" STREQUAL "sim")
         ascendc_kernels_${RUN_MODE}
     )
     install(TARGETS fps_host_dynamic
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    )
+
+    # Dynamic-shape multi-core GroupPoints
+    add_library(group_points_host_dynamic SHARED ${CMAKE_CURRENT_SOURCE_DIR}/group_points_host_dynamic.cpp)
+    target_compile_options(group_points_host_dynamic PRIVATE -O2 -std=c++17 -D_GLIBCXX_USE_CXX11_ABI=0)
+    target_include_directories(group_points_host_dynamic PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/out/include/ascendc_kernels_npu)
+    target_link_libraries(group_points_host_dynamic PRIVATE
+        host_intf_pub
+        ascendc_kernels_${RUN_MODE}
+    )
+    install(TARGETS group_points_host_dynamic
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     )
 endif()

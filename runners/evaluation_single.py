@@ -741,8 +741,10 @@ if __name__ == '__main__':
 
         def _timed_op(orig, key):
             def wrapper(*args, **kwargs):
+                torch.npu.synchronize()
                 t0 = time.time()
                 result = orig(*args, **kwargs)
+                torch.npu.synchronize()
                 perf_stats[key].append(time.time() - t0)
                 return result
             return wrapper
