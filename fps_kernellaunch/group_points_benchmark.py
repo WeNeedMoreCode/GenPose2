@@ -15,6 +15,10 @@ import torch_npu  # noqa: F401
 
 torch.npu.set_device(0)
 
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+from pointnet2_ops import _group_points
 from group_points_ascendc import GroupPointsAscendC
 
 WARMUP = 5
@@ -27,17 +31,6 @@ SHAPES = [
     (1, 131, 512, 256, 32),    # SA1
     (1, 387, 256, 128, 32),    # SA2
 ]
-
-
-def pytorch_group_points(points, idx):
-    """PyTorch expand+gather implementation (pointnet2_ops._group_points)."""
-    B, C, N = points.shape
-    M = idx.shape[1]
-    nsample = idx.shape[2]
-    idx = idx.unsqueeze(1).expand(-1, C, -1, -1)
-    points = points.unsqueeze(2).expand(-1, -1, M, -1)
-    out = torch.gather(points, dim=-1, index=idx)
-    return out
 
 
 def run_bench(name, fn, points, idx):
@@ -69,7 +62,7 @@ def correctness_test():
         points = torch.randn(B, C, N, device='npu:0', dtype=torch.float32)
         idx = torch.randint(0, N, (B, npoint, nsample), device='npu:0', dtype=torch.int32)
 
-        pt_out = pytorch_group_points(points, idx)
+        pt_out = _group_points(points, idx)
         ac_out = gp_kernel(points, idx)
 
         match = torch.allclose(pt_out, ac_out, atol=1e-5)
@@ -80,31 +73,35 @@ def correctness_test():
 
 
 def main():
-    gp_kernel = GroupPointsAscendC(num_cores=8)
+    gp_1core = GroupPointsAscendC(num_cores=1)
+    gp_8core = GroupPointsAscendC(num_cores=8)
 
     correctness_test()
 
     print("=== GroupPoints Performance Benchmark ===")
     print(f"warmup={WARMUP}, repeats={REPEATS}\n")
 
+    # B=1 shapes
     for B, C, N, npoint, nsample in SHAPES:
         points = torch.randn(B, C, N, device='npu:0', dtype=torch.float32)
         idx = torch.randint(0, N, (B, npoint, nsample), device='npu:0', dtype=torch.int32)
 
         print(f"--- B={B}, C={C}, N={N}, npoint={npoint}, nsample={nsample} ---")
-        py_ms = run_bench("PyTorch", pytorch_group_points, points, idx)
-        ac_ms = run_bench("AscendC (8-core)", gp_kernel, points, idx)
-        print(f"  Speedup: {py_ms / ac_ms:.1f}x\n")
+        py_ms = run_bench("PyTorch", _group_points, points, idx)
+        ac1_ms = run_bench("AscendC (1-core)", gp_1core, points, idx)
+        ac8_ms = run_bench("AscendC (8-core)", gp_8core, points, idx)
+        print(f"  Speedup: 1-core={py_ms/ac1_ms:.1f}x, 8-core={py_ms/ac8_ms:.1f}x\n")
 
-    # Multi-batch test
-    B = 16
-    C, N, npoint, nsample = 390, 1024, 512, 32
-    points = torch.randn(B, C, N, device='npu:0', dtype=torch.float32)
-    idx = torch.randint(0, N, (B, npoint, nsample), device='npu:0', dtype=torch.int32)
-    print(f"--- Batch B={B}, C={C}, N={N}, npoint={npoint}, nsample={nsample} ---")
-    py_ms = run_bench("PyTorch", pytorch_group_points, points, idx)
-    ac_ms = run_bench("AscendC (8-core)", gp_kernel, points, idx)
-    print(f"  Speedup: {py_ms / ac_ms:.1f}x\n")
+    # Multi-batch tests
+    for B in [8, 16, 32]:
+        C, N, npoint, nsample = 390, 1024, 512, 32
+        points = torch.randn(B, C, N, device='npu:0', dtype=torch.float32)
+        idx = torch.randint(0, N, (B, npoint, nsample), device='npu:0', dtype=torch.int32)
+        print(f"--- Batch B={B}, C={C}, N={N}, npoint={npoint}, nsample={nsample} ---")
+        py_ms = run_bench("PyTorch", _group_points, points, idx)
+        ac1_ms = run_bench("AscendC (1-core)", gp_1core, points, idx)
+        ac8_ms = run_bench("AscendC (8-core)", gp_8core, points, idx)
+        print(f"  Speedup: 1-core={py_ms/ac1_ms:.1f}x, 8-core={py_ms/ac8_ms:.1f}x\n")
 
 
 if __name__ == "__main__":
