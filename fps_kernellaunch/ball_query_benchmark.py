@@ -9,6 +9,7 @@ Usage:
     python ball_query_benchmark.py
 """
 
+import ctypes
 import time
 import torch
 import torch_npu  # noqa: F401
@@ -18,9 +19,10 @@ torch_npu.npu.set_compile_mode(jit_compile=False)
 
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(SCRIPT_DIR, '..'))
 from pointnet2_ops import _ball_query
-from ball_query_ascendc import BallQueryAscendC
+from ball_query_ascendc import BallQueryAscendC, _get_npu_stream
 
 WARMUP = 5
 REPEATS = 50
@@ -59,10 +61,28 @@ def _py_ball_query_wrapper(radius, nsample, xyz, new_xyz):
     return _ball_query(new_xyz, xyz, radius, nsample)
 
 
+def _load_debug_lib():
+    """Load the debug kernel host wrapper .so (same Python-level signature)."""
+    lib_path = os.path.join(SCRIPT_DIR, "out", "lib", "libball_query_debug.so")
+    if not os.path.exists(lib_path):
+        lib_path = os.path.join(SCRIPT_DIR, "libball_query_debug.so")
+    if not os.path.exists(lib_path):
+        raise FileNotFoundError(f"{lib_path} not found")
+    lib = ctypes.CDLL(lib_path)
+    lib.ball_query_debug_run.restype = ctypes.c_int
+    lib.ball_query_debug_run.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.c_int32, ctypes.c_int32, ctypes.c_int32,
+        ctypes.c_int32, ctypes.c_float,
+        ctypes.c_int32, ctypes.c_void_p,
+    ]
+    return lib
+
+
 def correctness_test():
     """Verify AscendC kernel output matches PyTorch."""
     print("=== Correctness Test ===\n")
-    torch.manual_seed(42)  # fix random seed for reproducibility
+    torch.manual_seed(42)
     bq_kernel = BallQueryAscendC(num_cores=8)
 
     for B, N, M, nsample, radius in SHAPES:
@@ -72,8 +92,6 @@ def correctness_test():
         pt_out = _ball_query(new_xyz, xyz, radius, nsample)
         ac_out = bq_kernel(radius, nsample, xyz, new_xyz)
 
-        # Ball query indices are integers; small diffs arise from float rounding
-        # at radius boundaries (especially large radius). Accept diff < nsample.
         max_diff = (pt_out - ac_out).abs().max().item()
         match = max_diff < nsample
         status = "PASS" if match else "FAIL"
