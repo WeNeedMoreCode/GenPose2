@@ -12,7 +12,6 @@
 #include <cstdio>
 
 static void *g_tiling_buf = nullptr;
-static void *g_dummy_buf = nullptr;
 
 static bool ensure_buf(void **buf, int32_t size) {
     if (*buf == nullptr) {
@@ -39,16 +38,6 @@ extern "C" int ball_query_run_dynamic(
     int32_t queriesPerCore = (totalQueries + num_cores - 1) / num_cores;
 
     if (!ensure_buf(&g_tiling_buf, 8 * sizeof(int32_t))) return -7;
-    if (!ensure_buf(&g_dummy_buf, 128 * sizeof(float))) return -7;
-
-    // Mimic debug host: write sentinel to dummy buffer (tests device memory layout effect)
-    float dummy_sentinel[128];
-    for (int i = 0; i < 128; i++) dummy_sentinel[i] = -999.0f;
-    aclError ret2 = aclrtMemcpy(g_dummy_buf, 128 * sizeof(float), dummy_sentinel, 128 * sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE);
-    if (ret2 != ACL_SUCCESS) {
-        fprintf(stderr, "[bq_dynamic] dummy sentinel H2D failed: %d\n", (int)ret2);
-        return -5;
-    }
 
     BallQueryTilingData tiling;
     tiling.B = B;

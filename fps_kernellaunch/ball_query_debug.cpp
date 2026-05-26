@@ -132,40 +132,9 @@ public:
             AscendC::DataCopy(idxGm[idxOffset], idxLocal, nsampleAlign);
             pipe_barrier(PIPE_V);
 
-            // Capture diagnostics for query (0,0) and (0,1)
-            if (b == 0 && m == 0) {
-                isDebugQuery = true;
-                dbgNx = nx; dbgNy = ny; dbgNz = nz;
-                dbgCnt = cnt;
-                dbgFirstIdx = firstIdx;
-                for (int32_t i = 0; i < 8 && i < N; i++) {
-                    float x = xyzRow.GetValue(i * 3 + 0);
-                    float y = xyzRow.GetValue(i * 3 + 1);
-                    float z = xyzRow.GetValue(i * 3 + 2);
-                    float dx = nx - x, dy = ny - y, dz = nz - z;
-                    dbgDists[i] = dx * dx + dy * dy + dz * dz;
-                    dbgD2Pass[i] = (dbgDists[i] < radius2) ? 1 : 0;
-                }
-                for (int32_t i = 0; i < 8; i++) {
-                    dbgIdxVals[i] = idxLocal.GetValue(i);
-                }
-            }
-            if (b == 0 && m == 1) {
-                isDebugQuery1 = true;
-                dbg1Nx = nx; dbg1Ny = ny; dbg1Nz = nz;
-                dbg1Cnt = cnt;
-                for (int32_t i = 0; i < 8 && i < N; i++) {
-                    float x = xyzRow.GetValue(i * 3 + 0);
-                    float y = xyzRow.GetValue(i * 3 + 1);
-                    float z = xyzRow.GetValue(i * 3 + 2);
-                    float dx = nx - x, dy = ny - y, dz = nz - z;
-                    dbg1Dists[i] = dx * dx + dy * dy + dz * dz;
-                    dbg1D2Pass[i] = (dbg1Dists[i] < radius2) ? 1 : 0;
-                }
-                for (int32_t i = 0; i < 8; i++) {
-                    dbg1IdxVals[i] = idxLocal.GetValue(i);
-                }
-            }
+            // Single dummy read to create dependency on idxLocal
+            float dummy_val = idxLocal.GetValue(0);
+            (void)dummy_val;
         }
 
         // Write diagnostics to debug GM
@@ -174,7 +143,7 @@ public:
         // [32..63]:  Query (0,1) diagnostics
         // [64..95]:  xyz[b=0, k=0..7, :] for query (0,1) — last xyz loaded
         // [96..127]: reserved
-        if (isDebugQuery || isDebugQuery1) {
+        if (coreId == 0) {
             AscendC::Duplicate(dbg, (float)-999, 128);
             pipe_barrier(PIPE_V);
 

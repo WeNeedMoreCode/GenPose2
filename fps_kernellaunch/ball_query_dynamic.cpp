@@ -28,7 +28,6 @@ public:
         N = tilingLocal.GetValue(1);
         M = tilingLocal.GetValue(2);
         nsample = tilingLocal.GetValue(3);
-        // radius is at offset 4 (16 bytes) as float — bit-cast via union (valid in C++)
         union { int32_t i; float f; } radiusCaster;
         radiusCaster.i = tilingLocal.GetValue(4);
         radius = radiusCaster.f;
@@ -46,7 +45,6 @@ public:
         pipe.InitBuffer(xyzRowBuf, xyzCountAlign * sizeof(float));
         pipe.InitBuffer(newXyzBuf, 16 * sizeof(float));
         pipe.InitBuffer(idxBuf, nsampleAlign * sizeof(int32_t));
-        pipe.InitBuffer(paddingBuf, 128 * sizeof(float));
 
         xyzGm.SetGlobalBuffer((__gm__ float *)xyz, (uint64_t)B * N * 3);
         newXyzGm.SetGlobalBuffer((__gm__ float *)new_xyz, (uint64_t)B * M * 3);
@@ -58,10 +56,6 @@ public:
         auto xyzRow = xyzRowBuf.Get<float>();
         auto newXyz = newXyzBuf.Get<float>();
         auto idxLocal = idxBuf.Get<int32_t>();
-        auto pad = paddingBuf.Get<float>();
-
-        AscendC::Duplicate(pad, (float)0, 128);
-        pipe_barrier(PIPE_V);
 
         int32_t totalQueries = B * M;
         int32_t myStart = coreId * queriesPerCore;
@@ -108,7 +102,6 @@ public:
                 if (d2 < radius2) {
                     if (cnt == 0) {
                         firstIdx = k;
-                        // Fill entire nsample with first index (matches CUDA logic)
                         for (int32_t l = 0; l < nsample; l++) {
                             idxLocal.SetValue(l, k);
                         }
@@ -127,6 +120,13 @@ public:
             uint64_t idxOffset = (uint64_t)b * M * nsample + (uint64_t)m * nsample;
             AscendC::DataCopy(idxGm[idxOffset], idxLocal, nsampleAlign);
             pipe_barrier(PIPE_V);
+
+            // Prevent AscendC compiler from overlapping this DMA with
+            // the next iteration's Duplicate(idxLocal). Without this read
+            // dependency, the compiler may pipeline the Duplicate ahead of
+            // the DMA completion, corrupting the output.
+            float _dummy = idxLocal.GetValue(0);
+            (void)_dummy;
         }
     }
 
@@ -141,7 +141,6 @@ private:
     AscendC::TBuf<AscendC::TPosition::VECIN> xyzRowBuf;
     AscendC::TBuf<AscendC::TPosition::VECIN> newXyzBuf;
     AscendC::TBuf<AscendC::TPosition::VECIN> idxBuf;
-    AscendC::TBuf<AscendC::TPosition::VECIN> paddingBuf;
 
     AscendC::GlobalTensor<float> xyzGm;
     AscendC::GlobalTensor<float> newXyzGm;
