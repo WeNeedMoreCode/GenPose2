@@ -40,7 +40,7 @@ public:
         nsampleAlign = (nsample + 7) / 8 * 8;
 
         pipe.InitBuffer(xyzRowBuf, xyzCountAlign * sizeof(float));
-        pipe.InitBuffer(newXyzBuf, 8 * sizeof(float));
+        pipe.InitBuffer(newXyzBuf, 16 * sizeof(float));
         pipe.InitBuffer(idxBuf, nsampleAlign * sizeof(int32_t));
         pipe.InitBuffer(debugBuf, 64 * sizeof(float));
 
@@ -83,13 +83,15 @@ public:
             AscendC::DataCopy(xyzRow, xyzGm[xyzOffset], xyzCountAlign);
             pipe_barrier(PIPE_V);
 
-            uint64_t newXyzOffset = (uint64_t)b * M * 3 + (uint64_t)m * 3;
-            AscendC::DataCopy(newXyz, newXyzGm[newXyzOffset], 8);
+            int32_t newRawIdx = b * M * 3 + m * 3;
+            int32_t newAlignedIdx = (newRawIdx / 8) * 8;
+            int32_t newSubOff = newRawIdx - newAlignedIdx;
+            AscendC::DataCopy(newXyz, newXyzGm[newAlignedIdx], 16);
             pipe_barrier(PIPE_V);
 
-            float nx = newXyz.GetValue(0);
-            float ny = newXyz.GetValue(1);
-            float nz = newXyz.GetValue(2);
+            float nx = newXyz.GetValue(newSubOff + 0);
+            float ny = newXyz.GetValue(newSubOff + 1);
+            float nz = newXyz.GetValue(newSubOff + 2);
 
             int32_t cnt = 0;
             int32_t firstIdx = 0;
