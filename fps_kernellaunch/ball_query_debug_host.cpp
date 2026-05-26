@@ -1,6 +1,6 @@
 /**
  * Host wrapper for ball_query_debug kernel.
- * Launches kernel, synchronizes, readbacks debug buffer (64 floats).
+ * Launches kernel, synchronizes, readbacks debug buffer (128 floats).
  */
 #include "acl/acl.h"
 #include "aclrtlaunch_ball_query_debug.h"
@@ -36,12 +36,11 @@ extern "C" int ball_query_debug_run(
     int32_t queriesPerCore = (totalQueries + num_cores - 1) / num_cores;
 
     if (!ensure_buf(&g_tiling_buf, 8 * sizeof(int32_t))) return -7;
-    if (!ensure_buf(&g_debug_buf, 64 * sizeof(float))) return -7;
+    if (!ensure_buf(&g_debug_buf, 128 * sizeof(float))) return -7;
 
-    // Pre-fill debug with sentinel
-    float sentinel[64];
-    for (int i = 0; i < 64; i++) sentinel[i] = -999.0f;
-    aclError ret = aclrtMemcpy(g_debug_buf, 64 * sizeof(float), sentinel, 64 * sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE);
+    float sentinel[128];
+    for (int i = 0; i < 128; i++) sentinel[i] = -999.0f;
+    aclError ret = aclrtMemcpy(g_debug_buf, 128 * sizeof(float), sentinel, 128 * sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE);
     if (ret != ACL_SUCCESS) {
         fprintf(stderr, "[bq_debug] sentinel H2D failed: %d\n", (int)ret);
         return -5;
@@ -73,56 +72,45 @@ extern "C" int ball_query_debug_run(
         return -6;
     }
 
-    // Readback debug buffer
-    float dbg[64];
-    ret = aclrtMemcpy(dbg, 64 * sizeof(float), g_debug_buf, 64 * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST);
+    float dbg[128];
+    ret = aclrtMemcpy(dbg, 128 * sizeof(float), g_debug_buf, 128 * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST);
     if (ret != ACL_SUCCESS) {
         fprintf(stderr, "[bq_debug] readback failed: %d\n", (int)ret);
         return -5;
     }
 
-    // Print diagnostics
-    fprintf(stderr, "\n[bq_debug] === AscendC kernel diagnostics for query (b=0, m=0) ===\n");
-
-    // Check sentinel
-    bool has_sentinel = true;
-    for (int i = 0; i < 4; i++) {
-        if (dbg[i] != -999.0f) { has_sentinel = false; break; }
-    }
-    if (has_sentinel) {
-        fprintf(stderr, "[bq_debug] SENTINEL detected — kernel did not write diagnostics!\n");
-        return -10;
-    }
-
-    // CP0: new_xyz
-    fprintf(stderr, "[bq_debug] CP0: new_xyz = (%.8f, %.8f, %.8f)\n", dbg[0], dbg[1], dbg[2]);
-    fprintf(stderr, "[bq_debug]      radius = %.8f, radius2 = %.10f\n", dbg[3], dbg[3]*dbg[3]);
-
-    // CP1: distances
-    fprintf(stderr, "[bq_debug] CP1: First 8 squared distances:\n");
-    for (int i = 0; i < 8; i++) {
-        fprintf(stderr, "[bq_debug]   k=%d: d2=%.12f  pass=%d\n",
-                i, dbg[4+i], (int)dbg[12+i]);
+    // Query (0,0) diagnostics
+    if (dbg[0] != -999.0f) {
+        fprintf(stderr, "\n[bq_debug] === Query (b=0, m=0) ===\n");
+        fprintf(stderr, "[bq_debug] CP0: new_xyz = (%.8f, %.8f, %.8f)\n", dbg[0], dbg[1], dbg[2]);
+        fprintf(stderr, "[bq_debug]      radius = %.8f, radius2 = %.10f\n", dbg[3], dbg[3]*dbg[3]);
+        fprintf(stderr, "[bq_debug] CP1: First 8 squared distances:\n");
+        for (int i = 0; i < 8; i++)
+            fprintf(stderr, "[bq_debug]   k=%d: d2=%.12f  pass=%d\n", i, dbg[4+i], (int)dbg[12+i]);
+        fprintf(stderr, "[bq_debug] CP2: cnt=%d, firstIdx=%d\n", (int)dbg[20], (int)dbg[21]);
+        fprintf(stderr, "[bq_debug] CP3: idx[0..7] =");
+        for (int i = 0; i < 8; i++) fprintf(stderr, " %d", (int)dbg[22+i]);
+        fprintf(stderr, "\n[bq_debug] Meta: N=%d, nsample=%d\n", (int)dbg[30], (int)dbg[31]);
     }
 
-    // CP2: cnt and firstIdx
-    fprintf(stderr, "[bq_debug] CP2: cnt=%d, firstIdx=%d\n", (int)dbg[20], (int)dbg[21]);
-
-    // CP3: idx values
-    fprintf(stderr, "[bq_debug] CP3: idx[0..7] =");
-    for (int i = 0; i < 8; i++) {
-        fprintf(stderr, " %d", (int)dbg[22+i]);
-    }
-    fprintf(stderr, "\n");
-
-    // Metadata
-    fprintf(stderr, "[bq_debug] Meta: N=%d, nsample=%d\n", (int)dbg[30], (int)dbg[31]);
-
-    // First 8 xyz coords
-    fprintf(stderr, "[bq_debug] xyz[0..7]:\n");
-    for (int i = 0; i < 8; i++) {
-        fprintf(stderr, "[bq_debug]   k=%d: (%.8f, %.8f, %.8f)\n",
-                i, dbg[32+i], dbg[40+i], dbg[48+i]);
+    // Query (0,1) diagnostics
+    if (dbg[32] != -999.0f) {
+        fprintf(stderr, "\n[bq_debug] === Query (b=0, m=1) ===\n");
+        fprintf(stderr, "[bq_debug] CP0: new_xyz = (%.8f, %.8f, %.8f)\n", dbg[32], dbg[33], dbg[34]);
+        fprintf(stderr, "[bq_debug]      radius = %.8f, radius2 = %.10f\n", dbg[35], dbg[35]*dbg[35]);
+        fprintf(stderr, "[bq_debug] CP1: First 8 squared distances:\n");
+        for (int i = 0; i < 8; i++)
+            fprintf(stderr, "[bq_debug]   k=%d: d2=%.12f  pass=%d\n", i, dbg[36+i], (int)dbg[44+i]);
+        fprintf(stderr, "[bq_debug] CP2: cnt=%d\n", (int)dbg[52]);
+        fprintf(stderr, "[bq_debug] CP3: idx[0..7] =");
+        for (int i = 0; i < 8; i++) fprintf(stderr, " %d", (int)dbg[54+i]);
+        fprintf(stderr, "\n");
+        fprintf(stderr, "[bq_debug] xyz[0..7] (from this query's xyzRow):\n");
+        for (int i = 0; i < 8; i++)
+            fprintf(stderr, "[bq_debug]   k=%d: (%.8f, %.8f, %.8f)\n",
+                    i, dbg[64+i], dbg[72+i], dbg[80+i]);
+    } else {
+        fprintf(stderr, "\n[bq_debug] Query (0,1) NOT captured (sentinel remains)\n");
     }
 
     fprintf(stderr, "[bq_debug] === End diagnostics ===\n\n");
