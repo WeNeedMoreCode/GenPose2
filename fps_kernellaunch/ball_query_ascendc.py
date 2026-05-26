@@ -95,7 +95,7 @@ class BallQueryAscendC:
             ctypes.c_void_p(stream_ptr),
         )
         assert ret == 0, f"ball_query_run_dynamic failed: ret={ret}"
-        return idx
+        return idx.to(torch.int64)
 
 
 _patched = False

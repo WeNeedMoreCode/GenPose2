@@ -68,6 +68,10 @@ public:
             int32_t b = q / M;
             int32_t m = q % M;
 
+            // 0. Clear idxLocal (matches PyTorch torch.zeros initialization)
+            AscendC::Duplicate(idxLocal, (int32_t)0, nsampleAlign);
+            pipe_barrier(PIPE_V);
+
             // 1. Read xyz[b, :, :] into UB
             uint64_t xyzOffset = (uint64_t)b * N * 3;
             AscendC::DataCopy(xyzRow, xyzGm[xyzOffset], xyzCountAlign);

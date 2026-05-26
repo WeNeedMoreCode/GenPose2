@@ -56,6 +56,8 @@ extern "C" int ball_query_run_dynamic(
     aclrtlaunch_ball_query_dynamic(num_cores, stream,
         xyz_ptr, new_xyz_ptr, idx_ptr, g_tiling_buf);
 
-    // No synchronize here — let torch.npu stream manage synchronization
+    // Synchronize to prevent g_tiling_buf from being overwritten
+    // by the next host call before this kernel reads it.
+    aclrtSynchronizeStream(stream);
     return 0;
 }
