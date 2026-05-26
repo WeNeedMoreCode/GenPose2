@@ -58,6 +58,10 @@ public:
         auto xyzRow = xyzRowBuf.Get<float>();
         auto newXyz = newXyzBuf.Get<float>();
         auto idxLocal = idxBuf.Get<int32_t>();
+        auto pad = paddingBuf.Get<float>();
+
+        AscendC::Duplicate(pad, (float)0, 128);
+        pipe_barrier(PIPE_V);
 
         int32_t totalQueries = B * M;
         int32_t myStart = coreId * queriesPerCore;

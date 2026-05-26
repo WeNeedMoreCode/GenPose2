@@ -80,8 +80,8 @@ def _load_debug_lib():
 
 
 def correctness_test():
-    """Verify AscendC kernel output matches PyTorch."""
-    print("=== Correctness Test ===\n")
+    """Verify production kernel output matches PyTorch."""
+    print("=== Correctness Test (production kernel) ===\n")
     torch.manual_seed(42)
     bq_kernel = BallQueryAscendC(num_cores=8)
 
@@ -99,11 +99,45 @@ def correctness_test():
     print()
 
 
+def correctness_test_debug():
+    """Verify debug kernel output matches PyTorch."""
+    print("=== Correctness Test (debug kernel) ===\n")
+    torch.manual_seed(42)
+    lib = _load_debug_lib()
+    num_cores = 8
+
+    for B, N, M, nsample, radius in SHAPES:
+        xyz = torch.randn(B, N, 3, device='npu:0', dtype=torch.float32)
+        new_xyz = torch.randn(B, M, 3, device='npu:0', dtype=torch.float32)
+
+        pt_out = _ball_query(new_xyz, xyz, radius, nsample)
+
+        idx_ac = torch.zeros(B, M, nsample, dtype=torch.int32, device='npu:0')
+        stream_ptr = _get_npu_stream()
+        ret = lib.ball_query_debug_run(
+            ctypes.c_void_p(xyz.data_ptr()),
+            ctypes.c_void_p(new_xyz.data_ptr()),
+            ctypes.c_void_p(idx_ac.data_ptr()),
+            ctypes.c_int32(B), ctypes.c_int32(N), ctypes.c_int32(M),
+            ctypes.c_int32(nsample), ctypes.c_float(radius),
+            ctypes.c_int32(num_cores), ctypes.c_void_p(stream_ptr),
+        )
+        ac_out = idx_ac.to(torch.int64)
+        assert ret == 0, f"debug kernel failed: ret={ret}"
+
+        max_diff = (pt_out - ac_out).abs().max().item()
+        match = max_diff < nsample
+        status = "PASS" if match else "FAIL"
+        print(f"  B={B}, N={N}, M={M}, nsample={nsample}, r={radius}: {status} (max_diff={max_diff:.2e})")
+    print()
+
+
 def main():
     bq_1core = BallQueryAscendC(num_cores=1)
     bq_8core = BallQueryAscendC(num_cores=8)
 
     correctness_test()
+    correctness_test_debug()
 
     print("=== Ball Query Performance Benchmark ===")
     print(f"warmup={WARMUP}, repeats={REPEATS}\n")
