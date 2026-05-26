@@ -46,6 +46,7 @@ public:
         pipe.InitBuffer(xyzRowBuf, xyzCountAlign * sizeof(float));
         pipe.InitBuffer(newXyzBuf, 16 * sizeof(float));
         pipe.InitBuffer(idxBuf, nsampleAlign * sizeof(int32_t));
+        pipe.InitBuffer(paddingBuf, 128 * sizeof(float));
 
         xyzGm.SetGlobalBuffer((__gm__ float *)xyz, (uint64_t)B * N * 3);
         newXyzGm.SetGlobalBuffer((__gm__ float *)new_xyz, (uint64_t)B * M * 3);
@@ -136,6 +137,7 @@ private:
     AscendC::TBuf<AscendC::TPosition::VECIN> xyzRowBuf;
     AscendC::TBuf<AscendC::TPosition::VECIN> newXyzBuf;
     AscendC::TBuf<AscendC::TPosition::VECIN> idxBuf;
+    AscendC::TBuf<AscendC::TPosition::VECIN> paddingBuf;
 
     AscendC::GlobalTensor<float> xyzGm;
     AscendC::GlobalTensor<float> newXyzGm;

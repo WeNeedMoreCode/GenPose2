@@ -55,9 +55,9 @@ class BallQueryAscendC:
 
     def __init__(self, num_cores=8):
         self.num_cores = num_cores
-        self.lib = _load_lib("libball_query_debug.so")
-        self.lib.ball_query_debug_run.restype = ctypes.c_int
-        self.lib.ball_query_debug_run.argtypes = [
+        self.lib = _load_lib("libball_query_host_dynamic.so")
+        self.lib.ball_query_run_dynamic.restype = ctypes.c_int
+        self.lib.ball_query_run_dynamic.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
             ctypes.c_int32, ctypes.c_int32, ctypes.c_int32,
             ctypes.c_int32, ctypes.c_float,
@@ -82,7 +82,7 @@ class BallQueryAscendC:
         idx = torch.zeros(B, M, nsample, dtype=torch.int32, device=xyz.device)
         stream_ptr = _get_npu_stream()
 
-        ret = self.lib.ball_query_debug_run(
+        ret = self.lib.ball_query_run_dynamic(
             ctypes.c_void_p(xyz.data_ptr()),
             ctypes.c_void_p(new_xyz.data_ptr()),
             ctypes.c_void_p(idx.data_ptr()),
@@ -94,7 +94,7 @@ class BallQueryAscendC:
             ctypes.c_int32(self.num_cores),
             ctypes.c_void_p(stream_ptr),
         )
-        assert ret == 0, f"ball_query_debug_run failed: ret={ret}"
+        assert ret == 0, f"ball_query_run_dynamic failed: ret={ret}"
         return idx.to(torch.int64)
 
 
