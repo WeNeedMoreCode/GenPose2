@@ -57,8 +57,6 @@ public:
         auto idxLocal = idxBuf.Get<int32_t>();
         auto dbg = debugBuf.Get<float>();
 
-        // Only core 0 processes query (b=0, m=0) for diagnostics
-        // All cores still produce correct idx output
         float radius2 = radius * radius;
         int32_t totalQueries = B * M;
         int32_t myStart = coreId * queriesPerCore;
@@ -72,7 +70,6 @@ public:
         int32_t dbgCnt = 0;
         int32_t dbgFirstIdx = -1;
         int32_t dbgIdxVals[8] = {0};
-        // Query (0,1) diagnostics
         float dbg1Nx = 0, dbg1Ny = 0, dbg1Nz = 0;
         float dbg1Dists[8] = {0};
         int32_t dbg1D2Pass[8] = {0};
@@ -132,18 +129,42 @@ public:
             AscendC::DataCopy(idxGm[idxOffset], idxLocal, nsampleAlign);
             pipe_barrier(PIPE_V);
 
-            // Single dummy read to create dependency on idxLocal
-            float dummy_val = idxLocal.GetValue(0);
-            (void)dummy_val;
+            if (b == 0 && m == 0) {
+                isDebugQuery = true;
+                dbgNx = nx; dbgNy = ny; dbgNz = nz;
+                dbgCnt = cnt;
+                dbgFirstIdx = firstIdx;
+                for (int32_t i = 0; i < 8 && i < N; i++) {
+                    float x = xyzRow.GetValue(i * 3 + 0);
+                    float y = xyzRow.GetValue(i * 3 + 1);
+                    float z = xyzRow.GetValue(i * 3 + 2);
+                    float dx = nx - x, dy = ny - y, dz = nz - z;
+                    dbgDists[i] = dx * dx + dy * dy + dz * dz;
+                    dbgD2Pass[i] = (dbgDists[i] < radius2) ? 1 : 0;
+                }
+                for (int32_t i = 0; i < 8; i++) {
+                    dbgIdxVals[i] = idxLocal.GetValue(i);
+                }
+            }
+            if (b == 0 && m == 1) {
+                isDebugQuery1 = true;
+                dbg1Nx = nx; dbg1Ny = ny; dbg1Nz = nz;
+                dbg1Cnt = cnt;
+                for (int32_t i = 0; i < 8 && i < N; i++) {
+                    float x = xyzRow.GetValue(i * 3 + 0);
+                    float y = xyzRow.GetValue(i * 3 + 1);
+                    float z = xyzRow.GetValue(i * 3 + 2);
+                    float dx = nx - x, dy = ny - y, dz = nz - z;
+                    dbg1Dists[i] = dx * dx + dy * dy + dz * dz;
+                    dbg1D2Pass[i] = (dbg1Dists[i] < radius2) ? 1 : 0;
+                }
+                for (int32_t i = 0; i < 8; i++) {
+                    dbg1IdxVals[i] = idxLocal.GetValue(i);
+                }
+            }
         }
 
-        // Write diagnostics to debug GM
-        // Layout: 128 floats
-        // [0..31]:   Query (0,0) diagnostics (same as before)
-        // [32..63]:  Query (0,1) diagnostics
-        // [64..95]:  xyz[b=0, k=0..7, :] for query (0,1) — last xyz loaded
-        // [96..127]: reserved
-        if (coreId == 0) {
+        if (isDebugQuery || isDebugQuery1) {
             AscendC::Duplicate(dbg, (float)-999, 128);
             pipe_barrier(PIPE_V);
 
@@ -178,7 +199,6 @@ public:
                 for (int32_t i = 0; i < 8; i++) {
                     dbg.SetValue(54 + i, (float)dbg1IdxVals[i]);
                 }
-                // xyz[0..7] for this query (same batch as m=0)
                 for (int32_t i = 0; i < 8 && i < N; i++) {
                     dbg.SetValue(64 + i, xyzRow.GetValue(i * 3 + 0));
                     dbg.SetValue(72 + i, xyzRow.GetValue(i * 3 + 1));
