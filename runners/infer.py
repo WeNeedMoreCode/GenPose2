@@ -9,14 +9,6 @@ import pickle
 import torch
 import torch_npu
 torch_npu.npu.set_compile_mode(jit_compile=False)
-fps_kernellaunch_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'ascendc_kernels')
-sys.path.insert(0, fps_kernellaunch_path)
-from fps_ascendc import patch_pointnet2_fps
-patch_pointnet2_fps(num_cores=8)
-from group_points_ascendc import patch_group_points
-patch_group_points(num_cores=8)
-from ball_query_ascendc import patch_ball_query
-patch_ball_query(num_cores=8)
 import random
 import gc
 import cv2
@@ -37,7 +29,6 @@ from utils.so3_visualize import visualize_so3
 from cutoop.eval_utils import DetectMatch, Metrics
 from configs.config import get_config
 from datasets.datasets_infer import InferDataset
-from runners.evaluation_single import apply_spec_ops_patches
 # from flask import Flask, request
 # flask_app = Flask(__name__)
 
@@ -46,6 +37,17 @@ class GenPose2:
     def __init__(self, score_model_path:str, energy_model_path:str, scale_model_path:str):
         ''' load config '''
         self.cfg = self._get_config(score_model_path, energy_model_path, scale_model_path)
+
+        # Patch PointNet2 operators with AscendC kernels before loading models
+        ascendc_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'ascendc_kernels')
+        if ascendc_path not in sys.path:
+            sys.path.insert(0, ascendc_path)
+        from fps_ascendc import patch_pointnet2_fps
+        from group_points_ascendc import patch_group_points
+        from ball_query_ascendc import patch_ball_query
+        patch_pointnet2_fps(num_cores=8)
+        patch_group_points(num_cores=8)
+        patch_ball_query(num_cores=8)
 
         ''' set random seed '''
         torch.manual_seed(self.cfg.seed)
@@ -289,7 +291,7 @@ def visualize_pose(data:InferDataset, all_final_pose, all_final_length, visualiz
 
 def main():
     ######################################## PARAMETERS ########################################
-    DATA_PATH = 'omin6dpose-000a/ROPE/000000/'                 # Path to the data
+    DATA_PATH = 'omni6dpose-000000/ROPE/000000/'                 # Path to the data
     RESULT_DIR = 'result_images'                               # Output directory for result images
     TRACKING = True                                           # Tracking mode
 
@@ -302,7 +304,6 @@ def main():
     ENERGY_MODEL_PATH='results/ckpts/EnergyNet/energynet.pth'  # Path to the energy model
     SCALE_MODEL_PATH='results/ckpts/ScaleNet/scalenet.pth'     # Path to the scale model
     PREV_POSE = None                                           # Previous pose
-    apply_spec_ops_patches()
     ######################################## PARAMETERS ########################################
 
     # Create result directory

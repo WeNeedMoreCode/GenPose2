@@ -32,11 +32,6 @@ def _load_lib(name):
             f"{name} not found. Run 'bash run.sh -r npu' first. "
             f"Searched: {script_dir}/out/lib/ and {script_dir}/"
         )
-    # Ensure the build output directory is on LD_LIBRARY_PATH
-    out_lib = os.path.join(script_dir, "out", "lib")
-    ld_path = os.environ.get("LD_LIBRARY_PATH", "")
-    if out_lib not in ld_path.split(os.pathsep):
-        os.environ["LD_LIBRARY_PATH"] = out_lib + os.pathsep + ld_path
     return ctypes.CDLL(lib_path)
 
 

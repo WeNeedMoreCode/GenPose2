@@ -59,6 +59,6 @@ extern "C" int group_points_run_dynamic(
     aclrtlaunch_group_points_dynamic(num_cores, stream,
         points_ptr, idx_ptr, out_ptr, g_tiling_buf);
 
-    // No synchronize here — let torch.npu stream manage synchronization
+    aclrtSynchronizeStream(stream);
     return 0;
 }

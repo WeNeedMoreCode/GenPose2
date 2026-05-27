@@ -718,42 +718,19 @@ if __name__ == '__main__':
     score_save_path = f'results/evaluation_results/{cfg.result_dir}/score_prediction_{score_model_name}.pkl'
 
     is_om_model = cfg.pretrained_score_model_path.endswith('.om')
-    syx_fps = 1  # 1 = use AscendC FPS monkey-patch, 0 = use original FPS
 
     if not is_om_model:
         import torch_npu
         torch_npu.npu.set_compile_mode(jit_compile=False)
 
-        syx_grouping = 1  # 1 = use AscendC GroupPoints monkey-patch, 0 = use original
-        fps_kernellaunch_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'ascendc_kernels')
-
-        if syx_fps:
-            sys.path.insert(0, fps_kernellaunch_path)
-            from fps_ascendc import patch_pointnet2_fps
-            patch_pointnet2_fps(num_cores=8)
-            print(f"[syx_fps] AscendC FPS enabled (syx_fps={syx_fps})")
-        else:
-            print(f"[syx_fps] Using original FPS (syx_fps={syx_fps})")
-
-        if syx_grouping:
-            if fps_kernellaunch_path not in sys.path:
-                sys.path.insert(0, fps_kernellaunch_path)
-            from group_points_ascendc import patch_group_points
-            patch_group_points(num_cores=8)
-            print(f"[syx_grouping] AscendC GroupPoints enabled (syx_grouping={syx_grouping})")
-        else:
-            print(f"[syx_grouping] Using original GroupPoints (syx_grouping={syx_grouping})")
-
-        syx_ball_query = 1  # 1 = use AscendC Ball Query monkey-patch, 0 = use original
-
-        if syx_ball_query:
-            if fps_kernellaunch_path not in sys.path:
-                sys.path.insert(0, fps_kernellaunch_path)
-            from ball_query_ascendc import patch_ball_query
-            patch_ball_query(num_cores=8)
-            print(f"[syx_ball_query] AscendC Ball Query enabled (syx_ball_query={syx_ball_query})")
-        else:
-            print(f"[syx_ball_query] Using original Ball Query (syx_ball_query={syx_ball_query})")
+        ascendc_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'ascendc_kernels')
+        sys.path.insert(0, ascendc_path)
+        from fps_ascendc import patch_pointnet2_fps
+        from group_points_ascendc import patch_group_points
+        from ball_query_ascendc import patch_ball_query
+        patch_pointnet2_fps(num_cores=8)
+        patch_group_points(num_cores=8)
+        patch_ball_query(num_cores=8)
 
         # Wrap custom ops with timing instrumentation
         from networks.pts_encoder.pointnet2_utils.pointnet2 import pointnet2_utils
