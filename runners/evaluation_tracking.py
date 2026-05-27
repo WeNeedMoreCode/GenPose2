@@ -75,7 +75,7 @@ is_om_model = cfg.pretrained_score_model_path.endswith('.om')
 if not is_om_model:
     import torch_npu
     torch_npu.npu.set_compile_mode(jit_compile=False)
-    fps_kernellaunch_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'fps_kernellaunch')
+    fps_kernellaunch_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'ascendc_kernels')
     sys.path.insert(0, fps_kernellaunch_path)
     from fps_ascendc import patch_pointnet2_fps
     patch_pointnet2_fps(num_cores=8)

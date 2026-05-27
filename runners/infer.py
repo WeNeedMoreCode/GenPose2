@@ -9,6 +9,14 @@ import pickle
 import torch
 import torch_npu
 torch_npu.npu.set_compile_mode(jit_compile=False)
+fps_kernellaunch_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'ascendc_kernels')
+sys.path.insert(0, fps_kernellaunch_path)
+from fps_ascendc import patch_pointnet2_fps
+patch_pointnet2_fps(num_cores=8)
+from group_points_ascendc import patch_group_points
+patch_group_points(num_cores=8)
+from ball_query_ascendc import patch_ball_query
+patch_ball_query(num_cores=8)
 import random
 import gc
 import cv2

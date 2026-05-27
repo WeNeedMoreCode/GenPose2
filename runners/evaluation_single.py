@@ -725,7 +725,7 @@ if __name__ == '__main__':
         torch_npu.npu.set_compile_mode(jit_compile=False)
 
         syx_grouping = 1  # 1 = use AscendC GroupPoints monkey-patch, 0 = use original
-        fps_kernellaunch_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'fps_kernellaunch')
+        fps_kernellaunch_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'ascendc_kernels')
 
         if syx_fps:
             sys.path.insert(0, fps_kernellaunch_path)
