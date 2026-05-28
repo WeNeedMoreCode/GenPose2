@@ -723,11 +723,9 @@ if __name__ == '__main__':
         import torch_npu
         torch_npu.npu.set_compile_mode(jit_compile=False)
 
-        ascendc_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'ascendc_kernels')
-        sys.path.insert(0, ascendc_path)
-        from fps_ascendc import patch_pointnet2_fps
-        from group_points_ascendc import patch_group_points
-        from ball_query_ascendc import patch_ball_query
+        from ascendc_kernels.fps_ascendc import patch_pointnet2_fps
+        from ascendc_kernels.group_points_ascendc import patch_group_points
+        from ascendc_kernels.ball_query_ascendc import patch_ball_query
         patch_pointnet2_fps(num_cores=8)
         patch_group_points(num_cores=8)
         patch_ball_query(num_cores=8)
