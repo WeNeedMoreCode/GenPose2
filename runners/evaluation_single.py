@@ -723,12 +723,17 @@ if __name__ == '__main__':
         import torch_npu
         torch_npu.npu.set_compile_mode(jit_compile=False)
 
-        from ascendc_kernels.fps_ascendc import patch_pointnet2_fps
-        from ascendc_kernels.group_points_ascendc import patch_group_points
-        from ascendc_kernels.ball_query_ascendc import patch_ball_query
-        patch_pointnet2_fps(num_cores=8)
-        patch_group_points(num_cores=8)
-        patch_ball_query(num_cores=8)
+        backend = os.environ.get("POINTNET2_BACKEND", "ascendc")
+        if backend == "graspnet_cpu":
+            from ascendc_kernels.graspnet_cpu_patches import patch_graspnet_cpu_ops
+            patch_graspnet_cpu_ops()
+        else:
+            from ascendc_kernels.fps_ascendc import patch_pointnet2_fps
+            from ascendc_kernels.group_points_ascendc import patch_group_points
+            from ascendc_kernels.ball_query_ascendc import patch_ball_query
+            patch_pointnet2_fps(num_cores=8)
+            patch_group_points(num_cores=8)
+            patch_ball_query(num_cores=8)
 
         # Wrap custom ops with timing instrumentation
         from networks.pts_encoder.pointnet2_utils.pointnet2 import pointnet2_utils
