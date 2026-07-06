@@ -204,12 +204,21 @@ def inference_score_decoupled(save_path):
 
     pointnet2_om_path = getattr(cfg, 'pretrained_pointnet2_score_model_path', None)
 
+    # POINTNET2_BACKEND=split_om: use split PointNet2 (CPU indexing + per-SA OM MLP)
+    pointnet2_split_encoder = None
+    if os.environ.get('POINTNET2_BACKEND') == 'split_om' and is_om_model:
+        from om_wrappers import PointNet2SplitOM
+        split_om_dir = os.environ.get('POINTNET2_SPLIT_OM_DIR', './om_models')
+        pointnet2_split_encoder = PointNet2SplitOM(
+            om_dir=split_om_dir, device=cfg.device, name_suffix='_from_score')
+        print(f"Using split PointNet2 OMs from {split_om_dir} (suffix=_from_score)")
 
     # Create Score Network wrapper (automatically uses OM or PyTorch)
     score_net = create_score_network(
         checkpoint_path=cfg.pretrained_score_model_path,
         device=cfg.device,
-        pointnet2_om_path=pointnet2_om_path  # Pass None for PyTorch, path for OM
+        pointnet2_om_path=pointnet2_om_path,  # Pass None for PyTorch, path for OM
+        pointnet2_encoder=pointnet2_split_encoder,
     )
     if is_om_model:
         from networks.gf_algorithms.sde import ve_sde_numpy
@@ -320,12 +329,17 @@ def inference_energy(score_path, save_path):
     all_pred_pose, _ = pickle.load(open(score_path, 'rb'))
 
     if is_om_model:
-        from om_wrappers import EnergyNetWrapper, PointNet2EncoderWrapper
+        from om_wrappers import EnergyNetWrapper, PointNet2EncoderWrapper, PointNet2SplitOM
         energy_net = EnergyNetWrapper(cfg.pretrained_energy_model_path, device=cfg.device)
         # Load PointNet2 from energy checkpoint for pts_feat extraction
-        pointnet2_encoder = PointNet2EncoderWrapper(cfg.pretrained_pointnet2_energy_model_path, device=cfg.device)
-        print(f"Using EnergyNet OM: {cfg.pretrained_energy_model_path}")
-        print(f"Using PointNet2 (from energy): {cfg.pretrained_pointnet2_energy_model_path}")
+        if os.environ.get('POINTNET2_BACKEND') == 'split_om':
+            split_om_dir = os.environ.get('POINTNET2_SPLIT_OM_DIR', './om_models')
+            pointnet2_encoder = PointNet2SplitOM(
+                om_dir=split_om_dir, device=cfg.device, name_suffix='_from_energy')
+            print(f"Using split PointNet2 OMs from {split_om_dir} (suffix=_from_energy)")
+        else:
+            pointnet2_encoder = PointNet2EncoderWrapper(cfg.pretrained_pointnet2_energy_model_path, device=cfg.device)
+            print(f"Using PointNet2 (from energy): {cfg.pretrained_pointnet2_energy_model_path}")
     else:
         cfg.agent_type = 'energy'
         energy_agent = PoseNet(cfg)
