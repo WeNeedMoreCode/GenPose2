@@ -188,7 +188,11 @@ def work_batch(test_batch, prev_pose):
         t0 = time.time()
         # DINOv2 + PointNet2 feature extraction
         rgb_feat = extract_dino_features(batch_sample)
+        t_dino = time.time()
         pts_feat = score_net.extract_pts_feat(batch_sample['pts'], rgb_feat)
+        t_pt2 = time.time()
+        if os.environ.get('POINTNET2_DEBUG'):
+            print(f"  DINOv2: {(t_dino-t0)*1000:.1f}ms, PointNet2: {(t_pt2-t_dino)*1000:.1f}ms")
 
         # Construct init_x: repeat prev_pose and add noise 
         _prev_pose = prev_pose.cpu().numpy().copy()
