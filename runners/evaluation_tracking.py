@@ -136,10 +136,16 @@ else:
         print(f"Using split PointNet2 (AscendC indexing + OM MLP) from {split_om_dir}")
     elif pn2_backend == 'ascendc':
         score_pointnet2_encoder = PointNet2AscendC(
-            pth_checkpoint_path=score_pth_path, device=cfg.device)
+            pth_checkpoint_path=score_pth_path, device=cfg.device, patch_mode='ascendc')
         energy_pointnet2_encoder = PointNet2AscendC(
-            pth_checkpoint_path=energy_pth_path, device=cfg.device)
-        print(f"Using AscendC PointNet2 (full PTH + AscendC kernel patches)")
+            pth_checkpoint_path=energy_pth_path, device=cfg.device, patch_mode='ascendc')
+        print(f"Using AscendC PointNet2 (full PTH + AscendC NPU kernels)")
+    elif pn2_backend == 'cpu_ops':
+        score_pointnet2_encoder = PointNet2AscendC(
+            pth_checkpoint_path=score_pth_path, device=cfg.device, patch_mode='graspnet_cpu')
+        energy_pointnet2_encoder = PointNet2AscendC(
+            pth_checkpoint_path=energy_pth_path, device=cfg.device, patch_mode='graspnet_cpu')
+        print(f"Using CPU-ops PointNet2 (full PTH + CPU fpsample/OMP)")
 
     # When using a custom PointNet2 encoder, don't pass pointnet2_om_path (avoid loading monolithic OM)
     score_om_path = None if score_pointnet2_encoder else pointnet2_score_om_path
