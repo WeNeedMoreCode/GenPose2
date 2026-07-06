@@ -100,7 +100,7 @@ else:
     from om_wrappers import (create_score_network, create_ode_sampler,
                              DINOv2Wrapper, EnergyNetWrapper,
                              PointNet2EncoderWrapper, PointNet2SplitOM,
-                             ScaleNetWrapper)
+                             PointNet2AscendC, ScaleNetWrapper)
     from networks.gf_algorithms.sde import init_sde, ve_sde_numpy
     from datasets.datasets_omni6dpose import process_batch_numpy
     from utils.misc import get_pose_dim
@@ -108,29 +108,43 @@ else:
     prior_fn, _, sde_fn, sampling_eps, _ = init_sde('ve')
     pointnet2_score_om_path = getattr(cfg, 'pretrained_pointnet2_score_model_path', None)
 
-    # POINTNET2_BACKEND=split_om: use split PointNet2 (CPU indexing + per-SA OM MLP)
-    use_split_om = os.environ.get('POINTNET2_BACKEND') == 'split_om'
+    # POINTNET2_BACKEND: split_om (CPU indexing + per-SA OM), ascendc (PTH + AscendC kernels), or monolithic OM (default)
+    pn2_backend = os.environ.get('POINTNET2_BACKEND', '')
     split_om_dir = os.environ.get('POINTNET2_SPLIT_OM_DIR', './om_models')
-    score_split_encoder = None
-    if use_split_om:
-        score_split_encoder = PointNet2SplitOM(
+    score_pth_path = './results/ckpts/ScoreNet/scorenet.pth'
+    energy_pth_path = './results/ckpts/EnergyNet/energynet.pth'
+
+    score_pointnet2_encoder = None
+    energy_pointnet2_encoder = None
+
+    if pn2_backend == 'split_om':
+        score_pointnet2_encoder = PointNet2SplitOM(
             om_dir=split_om_dir, device=cfg.device, name_suffix='_from_score')
-        print(f"Using split PointNet2 OMs from {split_om_dir} (suffix=_from_score)")
+        energy_pointnet2_encoder = PointNet2SplitOM(
+            om_dir=split_om_dir, device=cfg.device, name_suffix='_from_energy')
+        print(f"Using split PointNet2 OMs from {split_om_dir}")
+    elif pn2_backend == 'ascendc':
+        score_pointnet2_encoder = PointNet2AscendC(
+            pth_checkpoint_path=score_pth_path, device=cfg.device)
+        energy_pointnet2_encoder = PointNet2AscendC(
+            pth_checkpoint_path=energy_pth_path, device=cfg.device)
+        print(f"Using AscendC PointNet2 (PTH + AscendC kernels)")
+
+    # When using a custom PointNet2 encoder, don't pass pointnet2_om_path (avoid loading monolithic OM)
+    score_om_path = None if score_pointnet2_encoder else pointnet2_score_om_path
 
     score_net = create_score_network(
         checkpoint_path=cfg.pretrained_score_model_path,
         device=cfg.device,
-        pointnet2_om_path=pointnet2_score_om_path,
-        pointnet2_encoder=score_split_encoder,
+        pointnet2_om_path=score_om_path,
+        pointnet2_encoder=score_pointnet2_encoder,
     )
     sde_dir = {'prior_fn': prior_fn, 'sde_fn': ve_sde_numpy}
     sampler = create_ode_sampler(score_network=score_net, sde=sde_dir, device=cfg.device)
 
     energy_net = EnergyNetWrapper(cfg.pretrained_energy_model_path, device=cfg.device)
-    if use_split_om:
-        pointnet2_energy_encoder = PointNet2SplitOM(
-            om_dir=split_om_dir, device=cfg.device, name_suffix='_from_energy')
-        print(f"Using split PointNet2 OMs from {split_om_dir} (suffix=_from_energy)")
+    if energy_pointnet2_encoder is not None:
+        pointnet2_energy_encoder = energy_pointnet2_encoder
     else:
         pointnet2_energy_encoder = PointNet2EncoderWrapper(
             cfg.pretrained_pointnet2_energy_model_path, device=cfg.device)
