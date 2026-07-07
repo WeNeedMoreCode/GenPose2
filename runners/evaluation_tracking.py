@@ -75,12 +75,19 @@ is_om_model = cfg.pretrained_score_model_path.endswith('.om')
 if not is_om_model:
     import torch_npu
     torch_npu.npu.set_compile_mode(jit_compile=False)
-    from ascendc_kernels.fps_ascendc import patch_pointnet2_fps
-    patch_pointnet2_fps(num_cores=8)
-    from ascendc_kernels.group_points_ascendc import patch_group_points
-    patch_group_points(num_cores=8)
-    from ascendc_kernels.ball_query_ascendc import patch_ball_query
-    patch_ball_query(num_cores=8)
+    backend = os.environ.get("POINTNET2_BACKEND", "ascendc")
+    if backend == "graspnet_cpu":
+        from ascendc_kernels.graspnet_cpu_patches import patch_graspnet_cpu_ops
+        patch_graspnet_cpu_ops()
+        print(f"Using graspnet_cpu PointNet2 ops (CPU fpsample + GraspNet OMP)")
+    else:
+        from ascendc_kernels.fps_ascendc import patch_pointnet2_fps
+        patch_pointnet2_fps(num_cores=8)
+        from ascendc_kernels.group_points_ascendc import patch_group_points
+        patch_group_points(num_cores=8)
+        from ascendc_kernels.ball_query_ascendc import patch_ball_query
+        patch_ball_query(num_cores=8)
+        print(f"Using AscendC PointNet2 ops (NPU kernels)")
     cfg.agent_type = 'score'
     score_agent = PoseNet(cfg)
     score_agent.load_ckpt(model_dir=cfg.pretrained_score_model_path, model_path=True, load_model_only=True)
