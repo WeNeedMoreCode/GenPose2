@@ -116,6 +116,14 @@ if not is_om_model:
         )
         print(f"ScoreNet forward compiled with TorchAir (fullgraph=True)")
 
+        # Also compile PointNet2 pts_encoder (biggest single component ~220ms/frame)
+        if os.environ.get('TORCHAIR_PT2'):
+            score_agent.net.pts_encoder.forward = torch.compile(
+                score_agent.net.pts_encoder.forward,
+                dynamic=False, fullgraph=True, backend=npu_backend,
+            )
+            print(f"PointNet2 pts_encoder compiled with TorchAir (fullgraph=True)")
+
     cfg.agent_type = 'energy'
     energy_agent = PoseNet(cfg)
     energy_agent.load_ckpt(model_dir=cfg.pretrained_energy_model_path, model_path=True, load_model_only=True)
