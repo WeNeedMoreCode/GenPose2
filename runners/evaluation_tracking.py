@@ -118,11 +118,20 @@ if not is_om_model:
 
         # Also compile PointNet2 pts_encoder (biggest single component ~220ms/frame)
         if os.environ.get('TORCHAIR_PT2'):
+            import torch._dynamo
+            from networks.pts_encoder.pointnet2_utils.pointnet2 import pointnet2_utils as _pn2_utils
+            # Mark AscendC kernels as dynamo black boxes: run eager, don't trace into them
+            # (their assert/dtype checks trigger "Dynamic control flow" errors)
+            for _fn_name in ('furthest_point_sample', 'gather_operation',
+                             'grouping_operation', 'ball_query'):
+                _orig = getattr(_pn2_utils, _fn_name)
+                setattr(_pn2_utils, _fn_name, torch._dynamo.disable(_orig))
+
             score_agent.net.pts_encoder.forward = torch.compile(
                 score_agent.net.pts_encoder.forward,
                 dynamic=False, fullgraph=True, backend=npu_backend,
             )
-            print(f"PointNet2 pts_encoder compiled with TorchAir (fullgraph=True)")
+            print(f"PointNet2 pts_encoder compiled with TorchAir (fullgraph=True, AscendC kernels eager)")
 
     cfg.agent_type = 'energy'
     energy_agent = PoseNet(cfg)
