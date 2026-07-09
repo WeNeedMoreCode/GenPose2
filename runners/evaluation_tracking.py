@@ -123,31 +123,42 @@ if not is_om_model:
             import torch._dynamo
             from networks.pts_encoder.pointnet2_utils.pointnet2 import pointnet2_utils as _pn2_utils
 
-            # Try to use registered torch op for FPS (dynamo can trace via Meta registration)
-            _fps_via_op = None
+            # Try to use registered torch ops for FPS/ball_query/group_points
+            # (dynamo can trace via Meta registration; ctypes-based wrappers can't be traced)
+            _num_cores = int(os.environ.get('TORCHAIR_CORES', '8'))
             try:
                 import sys as _sys
                 _sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'ascendc_kernels', 'torch_op'))
-                from register_meta import load_fps_torch_op
-                load_fps_torch_op()
-                _num_cores = int(os.environ.get('TORCHAIR_CORES', '8'))
+                from register_meta import load_all_torch_ops
+                load_all_torch_ops()
+
+                # FPS: original signature (xyz, npoint) -> torch op (xyz, npoint, num_cores)
                 def _fps_via_op(xyz, npoints):
                     return torch.ops.npu.fps_ascendc(xyz, npoints, _num_cores)
                 _pn2_utils.furthest_point_sample = _fps_via_op
-                print(f"FPS uses registered torch.ops.npu.fps_ascendc (dynamo-traceable)")
-            except Exception as _e:
-                print(f"[WARN] fps_torch_op not available ({_e}), FPS stays ctypes-based")
 
-            # Remaining ctypes kernels still need @disable (assert triggers dynamic control flow)
-            for _fn_name in ('gather_operation', 'grouping_operation', 'ball_query'):
-                _orig = getattr(_pn2_utils, _fn_name)
-                setattr(_pn2_utils, _fn_name, torch._dynamo.disable(_orig))
+                # Ball query: original signature (radius, nsample, xyz, new_xyz) -> torch op (xyz, new_xyz, radius, nsample, num_cores)
+                def _ball_query_via_op(radius, nsample, xyz, new_xyz):
+                    return torch.ops.npu.ball_query_ascendc(xyz, new_xyz, radius, nsample, _num_cores)
+                _pn2_utils.ball_query = _ball_query_via_op
+
+                # Group points: original signature (features, idx) -> torch op (features, idx, num_cores)
+                def _grouping_via_op(features, idx):
+                    return torch.ops.npu.group_points_ascendc(features, idx, _num_cores)
+                _pn2_utils.grouping_operation = _grouping_via_op
+
+                print(f"FPS/ball_query/grouping use registered torch.ops.npu.*_ascendc (dynamo-traceable)")
+            except Exception as _e:
+                print(f"[WARN] torch_op not available ({_e}), AscendC kernels stay ctypes-based")
+
+            # gather_operation has no torch op wrapper yet — keep it eager via @dynamo.disable
+            _pn2_utils.gather_operation = torch._dynamo.disable(_pn2_utils.gather_operation)
 
             score_agent.net.pts_encoder.forward = torch.compile(
                 score_agent.net.pts_encoder.forward,
                 dynamic=False, fullgraph=False, backend=npu_backend,
             )
-            print(f"PointNet2 pts_encoder compiled with TorchAir (fullgraph=False, AscendC kernels eager)")
+            print(f"PointNet2 pts_encoder compiled with TorchAir (fullgraph=False, gather still eager)")
 
     cfg.agent_type = 'energy'
     energy_agent = PoseNet(cfg)
