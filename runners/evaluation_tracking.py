@@ -129,9 +129,9 @@ if not is_om_model:
 
             score_agent.net.pts_encoder.forward = torch.compile(
                 score_agent.net.pts_encoder.forward,
-                dynamic=False, fullgraph=True, backend=npu_backend,
+                dynamic=False, fullgraph=False, backend=npu_backend,
             )
-            print(f"PointNet2 pts_encoder compiled with TorchAir (fullgraph=True, AscendC kernels eager)")
+            print(f"PointNet2 pts_encoder compiled with TorchAir (fullgraph=False, AscendC kernels eager)")
 
     cfg.agent_type = 'energy'
     energy_agent = PoseNet(cfg)
