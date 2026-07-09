@@ -95,6 +95,15 @@ if not is_om_model:
 
     # TorchAir: compile ScoreNet forward (called ~260 times in ODE loop)
     if os.environ.get('USE_TORCHAIR'):
+        import functools
+        # dynamo can't trace functools.partial.__call__; unwrap to a plain function
+        _mpf = score_agent.net.pose_score_net.marginal_prob_func
+        if isinstance(_mpf, functools.partial):
+            _orig_fn, _args, _kwargs = _mpf.func, _mpf.args, _mpf.keywords
+            def _mpf_unwrapped(x, t):
+                return _orig_fn(*_args, x, t, **_kwargs)
+            score_agent.net.pose_score_net.marginal_prob_func = _mpf_unwrapped
+
         import torchair as tng
         from torchair.configs.compiler_config import CompilerConfig
         config = CompilerConfig()
