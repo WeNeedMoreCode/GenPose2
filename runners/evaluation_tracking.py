@@ -474,6 +474,20 @@ pbar = tqdm(total=total_objects)
 for i in range(30):
     add_dataloader()
 
+# TorchAir warmup: trigger torch.compile compilation before timed loop
+if os.environ.get('USE_TORCHAIR'):
+    with torch.no_grad():
+        _pose_dim = 9 if cfg.pose_mode == 'rot_matrix' else 7
+        score_agent.net.pose_score_net({
+            'pts_feat': torch.randn(1, 1024, device=cfg.device),
+            'rgb_feat': None,
+            'sampled_pose': torch.randn(1, _pose_dim, device=cfg.device),
+            't': torch.randn(1, 1, device=cfg.device),
+        })
+        if os.environ.get('TORCHAIR_PT2'):
+            score_agent.net.pts_encoder(torch.randn(1, 1024, 387, device=cfg.device))
+    print("TorchAir warmup done (compilation triggered, excluded from timing)")
+
 perf_stats = {
     'score_time': [],
     'score_samples': 0,
