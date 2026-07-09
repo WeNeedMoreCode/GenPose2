@@ -122,10 +122,24 @@ if not is_om_model:
         if os.environ.get('TORCHAIR_PT2'):
             import torch._dynamo
             from networks.pts_encoder.pointnet2_utils.pointnet2 import pointnet2_utils as _pn2_utils
-            # Mark AscendC kernels as dynamo black boxes: run eager, don't trace into them
-            # (their assert/dtype checks trigger "Dynamic control flow" errors)
-            for _fn_name in ('furthest_point_sample', 'gather_operation',
-                             'grouping_operation', 'ball_query'):
+
+            # Try to use registered torch op for FPS (dynamo can trace via Meta registration)
+            _fps_via_op = None
+            try:
+                import sys as _sys
+                _sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'ascendc_kernels', 'torch_op'))
+                from register_meta import load_fps_torch_op
+                load_fps_torch_op()
+                _num_cores = int(os.environ.get('TORCHAIR_CORES', '8'))
+                def _fps_via_op(xyz, npoints):
+                    return torch.ops.npu.fps_ascendc(xyz, npoints, _num_cores)
+                _pn2_utils.furthest_point_sample = _fps_via_op
+                print(f"FPS uses registered torch.ops.npu.fps_ascendc (dynamo-traceable)")
+            except Exception as _e:
+                print(f"[WARN] fps_torch_op not available ({_e}), FPS stays ctypes-based")
+
+            # Remaining ctypes kernels still need @disable (assert triggers dynamic control flow)
+            for _fn_name in ('gather_operation', 'grouping_operation', 'ball_query'):
                 _orig = getattr(_pn2_utils, _fn_name)
                 setattr(_pn2_utils, _fn_name, torch._dynamo.disable(_orig))
 
