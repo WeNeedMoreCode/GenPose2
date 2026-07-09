@@ -95,6 +95,8 @@ if not is_om_model:
 
     # TorchAir: compile ScoreNet forward (called ~260 times in ODE loop)
     if os.environ.get('USE_TORCHAIR'):
+        import torch._dynamo
+        torch._dynamo.config.suppress_errors = True  # fall back to eager on unsupported ops (e.g. aten.amax)
         import functools
         # dynamo can't trace functools.partial.__call__; unwrap to a plain function
         _mpf = score_agent.net.pose_score_net.marginal_prob_func
