@@ -93,6 +93,20 @@ if not is_om_model:
     score_agent.load_ckpt(model_dir=cfg.pretrained_score_model_path, model_path=True, load_model_only=True)
     score_agent.eval()
 
+    # TorchAir: compile ScoreNet forward (called ~260 times in ODE loop)
+    if os.environ.get('USE_TORCHAIR'):
+        import torchair as tng
+        from torchair.configs.compiler_config import CompilerConfig
+        config = CompilerConfig()
+        config.experimental_config.frozen_parameter = True
+        config.experimental_config.tiling_schedule_optimize = True
+        npu_backend = tng.get_npu_backend(compiler_config=config)
+        score_agent.net.pose_score_net.forward = torch.compile(
+            score_agent.net.pose_score_net.forward,
+            dynamic=False, fullgraph=True, backend=npu_backend,
+        )
+        print(f"ScoreNet forward compiled with TorchAir (fullgraph=True)")
+
     cfg.agent_type = 'energy'
     energy_agent = PoseNet(cfg)
     energy_agent.load_ckpt(model_dir=cfg.pretrained_energy_model_path, model_path=True, load_model_only=True)
