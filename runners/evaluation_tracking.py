@@ -14,6 +14,19 @@ import time
 import cv2
 import glob
 import numpy as np
+
+# --- pointnet2 I/O dump (env-gated; precision diff between backends) ---
+_PN2_DUMP = {'dir': os.environ.get('DUMP_PN2_DIR'),
+             'max': int(os.environ.get('DUMP_PN2_MAX', '20')) if os.environ.get('DUMP_PN2_DIR') else 0,
+             'score': 0, 'energy': 0}
+def _pn2_dump(role, inp, out):
+    if not _PN2_DUMP['dir'] or _PN2_DUMP[role] >= _PN2_DUMP['max']:
+        return
+    os.makedirs(_PN2_DUMP['dir'], exist_ok=True)
+    i = _PN2_DUMP[role]
+    np.save(os.path.join(_PN2_DUMP['dir'], role + '_in_%04d.npy' % i), np.asarray(inp))
+    np.save(os.path.join(_PN2_DUMP['dir'], role + '_out_%04d.npy' % i), np.asarray(out))
+    _PN2_DUMP[role] += 1
 from tqdm import tqdm
 import _pickle as cPickle
 import pickle
@@ -122,43 +135,88 @@ if not is_om_model:
         if os.environ.get('TORCHAIR_PT2'):
             import torch._dynamo
             from networks.pts_encoder.pointnet2_utils.pointnet2 import pointnet2_utils as _pn2_utils
-
-            # Try to use registered torch ops for FPS/ball_query/group_points
-            # (dynamo can trace via Meta registration; ctypes-based wrappers can't be traced)
             _num_cores = int(os.environ.get('TORCHAIR_CORES', '8'))
-            try:
-                import sys as _sys
-                _sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'ascendc_kernels', 'torch_op'))
-                from register_meta import load_all_torch_ops
-                load_all_torch_ops()
 
-                # FPS: original signature (xyz, npoint) -> torch op (xyz, npoint, num_cores)
+            if os.environ.get('TORCHAIR_GE'):
+                # ---- GE fullgraph path (ge_dev90 / CANN 9.0, torch 2.10) ----
+                # Pure-Python op defs + Meta + GE converters (no torch_op .so — those
+                # are torch-2.1 builds and don't load under 2.10). Ops route to the
+                # .run-deployed GE kernels (FpsGe/BallQueryGe/GroupPointsCustom).
+                from ascendc_kernels.ge_custom_ops.register_ge_converter import register_all
+                register_all()
+
+                # 坑 12: torchair has no aten.amax converter (stub -> NotImplementedError).
+                # amax(x,dim,keepdim) === max(x,dim,keepdim).values, and aten.max.dim has a
+                # GE impl (ReduceMax). Swap globally so every SA-layer max-pool (and ScoreNet
+                # if it uses amax) traces under fullgraph.
+                torch.amax = lambda x, dim, keepdim=False: torch.max(x, dim=dim, keepdim=keepdim).values
+
+                # FPS: FpsGe kernel reads [3,N], so transpose on the torch side
+                # (torchair.ge has no transpose — skill 坑10). [B,N,3] -> [B,3,N].
                 def _fps_via_op(xyz, npoints):
-                    return torch.ops.npu.fps_ascendc(xyz, npoints, _num_cores)
-                _pn2_utils.furthest_point_sample = _fps_via_op
-
-                # Ball query: original signature (radius, nsample, xyz, new_xyz) -> torch op (xyz, new_xyz, radius, nsample, num_cores)
+                    return torch.ops.ascendc.fps_ascendc(xyz.transpose(1, 2).contiguous(), npoints, _num_cores)
+                # ball_query/group_points: layouts match GE kernel directly, passthrough.
                 def _ball_query_via_op(radius, nsample, xyz, new_xyz):
-                    return torch.ops.npu.ball_query_ascendc(xyz, new_xyz, radius, nsample, _num_cores)
-                _pn2_utils.ball_query = _ball_query_via_op
-
-                # Group points: original signature (features, idx) -> torch op (features, idx, num_cores)
+                    return torch.ops.ascendc.ball_query_ascendc(xyz, new_xyz, radius, nsample, _num_cores)
                 def _grouping_via_op(features, idx):
-                    return torch.ops.npu.group_points_ascendc(features, idx, _num_cores)
+                    return torch.ops.ascendc.group_points_ascendc(features, idx, _num_cores)
+                # gather: native torch.gather (dynamo-traceable, NPU-native). Replaces
+                # pointnet2_ops._gather_points (C++ ext, absent in ge_dev90). POC-proven.
+                def _gather_via_torch(features, idx):
+                    # (B,C,N) + (B,npoint) -> (B,C,npoint)
+                    return torch.gather(features, 2, idx.unsqueeze(1).expand(-1, features.shape[1], -1).long())
+                _pn2_utils.furthest_point_sample = _fps_via_op
+                _pn2_utils.ball_query = _ball_query_via_op
                 _pn2_utils.grouping_operation = _grouping_via_op
+                _pn2_utils.gather_operation = _gather_via_torch
+                print("PointNet2 ops -> GE fullgraph (FpsGe/BallQueryGe/GroupPointsCustom + native gather)")
 
-                print(f"FPS/ball_query/grouping use registered torch.ops.npu.*_ascendc (dynamo-traceable)")
-            except Exception as _e:
-                print(f"[WARN] torch_op not available ({_e}), AscendC kernels stay ctypes-based")
+                # split-2: whole-encoder fullgraph hangs at GE runtime (坑 13: aicore timeout
+                # 507011 after ~3+ cumulative MSG layers; whole-graph & per-layer-4 both hang).
+                # Compile 2 halves (SA0+1 | SA2+3) and eager-chain them — the chained-compiled-
+                # model threshold is ~2-3, so 2 halves pass. Reuses the encoder's TRAINED
+                # SA_modules (no fresh construction). POC: ascendc_kernels/test_split2.py;
+                # builder: ascendc_kernels/ge_split2_encoder.py.
+                from ascendc_kernels.ge_split2_encoder import build_split2_forward
+                score_agent.net.pts_encoder.forward = build_split2_forward(
+                    score_agent.net.pts_encoder, npu_backend,
+                )
+                print("PointNet2 pts_encoder -> GE split-2 fullgraph (Half1=SA0+1, Half2=SA2+3, eager chain)")
+            else:
+                # ---- torch_op eager-fallback path (genpose2_build / torch 2.1) ----
+                # dynamo traces via Meta registration; ctypes-based wrappers can't be traced.
+                try:
+                    import sys as _sys
+                    _sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'ascendc_kernels', 'torch_op'))
+                    from register_meta import load_all_torch_ops
+                    load_all_torch_ops()
 
-            # gather_operation has no torch op wrapper yet — keep it eager via @dynamo.disable
-            _pn2_utils.gather_operation = torch._dynamo.disable(_pn2_utils.gather_operation)
+                    # FPS: original signature (xyz, npoint) -> torch op (xyz, npoint, num_cores)
+                    def _fps_via_op(xyz, npoints):
+                        return torch.ops.npu.fps_ascendc(xyz, npoints, _num_cores)
+                    _pn2_utils.furthest_point_sample = _fps_via_op
 
-            score_agent.net.pts_encoder.forward = torch.compile(
-                score_agent.net.pts_encoder.forward,
-                dynamic=False, fullgraph=False, backend=npu_backend,
-            )
-            print(f"PointNet2 pts_encoder compiled with TorchAir (fullgraph=False, gather still eager)")
+                    # Ball query: original signature (radius, nsample, xyz, new_xyz) -> torch op (xyz, new_xyz, radius, nsample, num_cores)
+                    def _ball_query_via_op(radius, nsample, xyz, new_xyz):
+                        return torch.ops.npu.ball_query_ascendc(xyz, new_xyz, radius, nsample, _num_cores)
+                    _pn2_utils.ball_query = _ball_query_via_op
+
+                    # Group points: original signature (features, idx) -> torch op (features, idx, num_cores)
+                    def _grouping_via_op(features, idx):
+                        return torch.ops.npu.group_points_ascendc(features, idx, _num_cores)
+                    _pn2_utils.grouping_operation = _grouping_via_op
+
+                    print(f"FPS/ball_query/grouping use registered torch.ops.npu.*_ascendc (dynamo-traceable)")
+                except Exception as _e:
+                    print(f"[WARN] torch_op not available ({_e}), AscendC kernels stay ctypes-based")
+
+                # gather_operation has no torch op wrapper yet — keep it eager via @dynamo.disable
+                _pn2_utils.gather_operation = torch._dynamo.disable(_pn2_utils.gather_operation)
+                score_agent.net.pts_encoder.forward = torch.compile(
+                    score_agent.net.pts_encoder.forward,
+                    dynamic=False, fullgraph=False, backend=npu_backend,
+                )
+                print("PointNet2 pts_encoder compiled with TorchAir (fullgraph=False, op-break eager)")
 
     cfg.agent_type = 'energy'
     energy_agent = PoseNet(cfg)
@@ -296,6 +354,7 @@ def work_batch(test_batch, prev_pose):
         t_dino = time.time()
         pts_feat = score_net.extract_pts_feat(batch_sample['pts'], rgb_feat)
         t_pt2 = time.time()
+        _pn2_dump('score', np.concatenate([batch_sample['pts'], rgb_feat], axis=-1), pts_feat)
         if os.environ.get('POINTNET2_DEBUG'):
             print(f"  DINOv2: {(t_dino-t0)*1000:.1f}ms, PointNet2: {(t_pt2-t_dino)*1000:.1f}ms")
 
@@ -332,6 +391,7 @@ def work_batch(test_batch, prev_pose):
         # OM energy
         pts_with_rgb = np.concatenate([batch_sample['pts'], rgb_feat], axis=-1)  # [bs, 1024, 387]
         pts_feat_energy = pointnet2_energy_encoder(pts_with_rgb)
+        _pn2_dump('energy', pts_with_rgb, pts_feat_energy)
 
         pose_samples = score_pred_results.reshape(bs * repeat_num, -1).astype(np.float32)
         pose_samples[:, -3:] -= np.repeat(batch_sample['pts_center'], repeat_num, axis=0)
