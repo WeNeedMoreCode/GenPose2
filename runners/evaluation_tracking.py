@@ -278,6 +278,11 @@ else:
         energy_pointnet2_encoder = PointNet2AscendC(
             pth_checkpoint_path=energy_pth_path, device=cfg.device, patch_mode='graspnet_cpu')
         print(f"Using CPU-ops PointNet2 (full PTH + CPU fpsample/OMP)")
+    elif pn2_backend == 'fps_outside':
+        from om_wrappers import PointNet2FpsOutside
+        score_pointnet2_encoder = PointNet2FpsOutside(om_dir='/tmp/sa_layer_score', device=cfg.device)
+        energy_pointnet2_encoder = PointNet2FpsOutside(om_dir='/tmp/sa_layer_energy', device=cfg.device)
+        print(f"Using PointNet2 FpsOutside (ctypes fps + sa_layer OM)")
 
     # When using a custom PointNet2 encoder, don't pass pointnet2_om_path (avoid loading monolithic OM)
     score_om_path = None if score_pointnet2_encoder else pointnet2_score_om_path
