@@ -88,135 +88,40 @@ is_om_model = cfg.pretrained_score_model_path.endswith('.om')
 if not is_om_model:
     import torch_npu
     torch_npu.npu.set_compile_mode(jit_compile=False)
-    backend = os.environ.get("POINTNET2_BACKEND", "ascendc")
-    if backend == "graspnet_cpu":
-        from ascendc_kernels.graspnet_cpu_patches import patch_graspnet_cpu_ops
-        patch_graspnet_cpu_ops()
-        print(f"Using graspnet_cpu PointNet2 ops (CPU fpsample + GraspNet OMP)")
-    else:
-        from ascendc_kernels.fps_ascendc import patch_pointnet2_fps
+    pn2_backend = os.environ.get("POINTNET2_BACKEND", "torch_ops")
+    if pn2_backend == "ctypes":
+        # ctypes 直调（kernel_ctypes host lib）
+        from ascendc_kernels.kernel_ctypes.fps import patch_pointnet2_fps
+        from ascendc_kernels.kernel_ctypes.ball_query import patch_ball_query
+        from ascendc_kernels.kernel_ctypes.group_points import patch_group_points
         patch_pointnet2_fps(num_cores=8)
-        from ascendc_kernels.group_points_ascendc import patch_group_points
-        patch_group_points(num_cores=8)
-        from ascendc_kernels.ball_query_ascendc import patch_ball_query
         patch_ball_query(num_cores=8)
-        print(f"Using AscendC PointNet2 ops (NPU kernels)")
+        patch_group_points(num_cores=8)
+        print("Using AscendC PointNet2 ops via ctypes (kernel_ctypes host lib)")
+    elif pn2_backend == "graspnet_cpu":
+        # CPU OMP 兜底（无 NPU 时用 CPU fpsample + GraspNet OMP）
+        from ascendc_kernels.kernel_ctypes.graspnet_cpu_patches import patch_graspnet_cpu_ops
+        patch_graspnet_cpu_ops()
+        print("Using graspnet_cpu PointNet2 ops (CPU fpsample + GraspNet OMP)")
+    elif pn2_backend == "torch_native":
+        # 纯 torch pointnet2_ops（GenPosePlus/pointnet2_ops.py，最原始 fallback，不 patch）
+        # NPU 上没装 CUDA pointnet2_ops 时，pointnet2_utils 的 import pointnet2_ops 默认拿到它
+        print("Using pure-torch PointNet2 ops (pointnet2_ops.py, no AscendC kernels)")
+    else:
+        # 默认 torch_ops：注册 torch.ops.npu.*_ascendc + patch pointnet2_utils
+        import sys as _sys
+        _sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'ascendc_kernels', 'torch_ops'))
+        from register_meta import load_all_torch_ops
+        load_all_torch_ops()
+        from networks.pts_encoder.pointnet2_utils.pointnet2 import pointnet2_utils as _pn2
+        _pn2.furthest_point_sample = lambda xyz, npoints: torch.ops.npu.fps_ascendc(xyz, npoints, 8)
+        _pn2.ball_query = lambda radius, nsample, xyz, new_xyz: torch.ops.npu.ball_query_ascendc(xyz, new_xyz, radius, nsample, 8)
+        _pn2.grouping_operation = lambda features, idx: torch.ops.npu.group_points_ascendc(features, idx, 8)
+        print("Using AscendC PointNet2 ops via torch.ops.npu.*_ascendc (torch_ops, default)")
     cfg.agent_type = 'score'
     score_agent = PoseNet(cfg)
     score_agent.load_ckpt(model_dir=cfg.pretrained_score_model_path, model_path=True, load_model_only=True)
     score_agent.eval()
-
-    # TorchAir: compile ScoreNet forward (called ~260 times in ODE loop)
-    if os.environ.get('USE_TORCHAIR'):
-        import torch._dynamo
-        torch._dynamo.config.suppress_errors = True  # fall back to eager on unsupported ops (e.g. aten.amax)
-        import functools
-        # dynamo can't trace functools.partial.__call__; unwrap to a plain function
-        _mpf = score_agent.net.pose_score_net.marginal_prob_func
-        if isinstance(_mpf, functools.partial):
-            _orig_fn, _args, _kwargs = _mpf.func, _mpf.args, _mpf.keywords
-            def _mpf_unwrapped(x, t):
-                return _orig_fn(*_args, x, t, **_kwargs)
-            score_agent.net.pose_score_net.marginal_prob_func = _mpf_unwrapped
-
-        import torchair as tng
-        from torchair.configs.compiler_config import CompilerConfig
-        config = CompilerConfig()
-        config.experimental_config.frozen_parameter = True
-        config.experimental_config.tiling_schedule_optimize = True
-        npu_backend = tng.get_npu_backend(compiler_config=config)
-        score_agent.net.pose_score_net.forward = torch.compile(
-            score_agent.net.pose_score_net.forward,
-            dynamic=False, fullgraph=True, backend=npu_backend,
-        )
-        print(f"ScoreNet forward compiled with TorchAir (fullgraph=True)")
-
-        # Also compile PointNet2 pts_encoder (biggest single component ~220ms/frame)
-        if os.environ.get('TORCHAIR_PT2'):
-            import torch._dynamo
-            from networks.pts_encoder.pointnet2_utils.pointnet2 import pointnet2_utils as _pn2_utils
-            _num_cores = int(os.environ.get('TORCHAIR_CORES', '8'))
-
-            if os.environ.get('TORCHAIR_GE'):
-                # ---- GE fullgraph path (ge_dev90 / CANN 9.0, torch 2.10) ----
-                # Pure-Python op defs + Meta + GE converters (no torch_op .so — those
-                # are torch-2.1 builds and don't load under 2.10). Ops route to the
-                # .run-deployed GE kernels (FpsGe/BallQueryGe/GroupPointsCustom).
-                from ascendc_kernels.ge_custom_ops.register_ge_converter import register_all
-                register_all()
-
-                # 坑 12: torchair has no aten.amax converter (stub -> NotImplementedError).
-                # amax(x,dim,keepdim) === max(x,dim,keepdim).values, and aten.max.dim has a
-                # GE impl (ReduceMax). Swap globally so every SA-layer max-pool (and ScoreNet
-                # if it uses amax) traces under fullgraph.
-                torch.amax = lambda x, dim, keepdim=False: torch.max(x, dim=dim, keepdim=keepdim).values
-
-                # FPS: FpsGe kernel reads [3,N], so transpose on the torch side
-                # (torchair.ge has no transpose — skill 坑10). [B,N,3] -> [B,3,N].
-                def _fps_via_op(xyz, npoints):
-                    return torch.ops.ascendc.fps_ascendc(xyz.transpose(1, 2).contiguous(), npoints, _num_cores)
-                # ball_query/group_points: layouts match GE kernel directly, passthrough.
-                def _ball_query_via_op(radius, nsample, xyz, new_xyz):
-                    return torch.ops.ascendc.ball_query_ascendc(xyz, new_xyz, radius, nsample, _num_cores)
-                def _grouping_via_op(features, idx):
-                    return torch.ops.ascendc.group_points_ascendc(features, idx, _num_cores)
-                # gather: native torch.gather (dynamo-traceable, NPU-native). Replaces
-                # pointnet2_ops._gather_points (C++ ext, absent in ge_dev90). POC-proven.
-                def _gather_via_torch(features, idx):
-                    # (B,C,N) + (B,npoint) -> (B,C,npoint)
-                    return torch.gather(features, 2, idx.unsqueeze(1).expand(-1, features.shape[1], -1).long())
-                _pn2_utils.furthest_point_sample = _fps_via_op
-                _pn2_utils.ball_query = _ball_query_via_op
-                _pn2_utils.grouping_operation = _grouping_via_op
-                _pn2_utils.gather_operation = _gather_via_torch
-                print("PointNet2 ops -> GE fullgraph (FpsGe/BallQueryGe/GroupPointsCustom + native gather)")
-
-                # split-2: whole-encoder fullgraph hangs at GE runtime (坑 13: aicore timeout
-                # 507011 after ~3+ cumulative MSG layers; whole-graph & per-layer-4 both hang).
-                # Compile 2 halves (SA0+1 | SA2+3) and eager-chain them — the chained-compiled-
-                # model threshold is ~2-3, so 2 halves pass. Reuses the encoder's TRAINED
-                # SA_modules (no fresh construction). POC: ascendc_kernels/test_split2.py;
-                # builder: ascendc_kernels/ge_split2_encoder.py.
-                from ascendc_kernels.ge_split2_encoder import build_split2_forward
-                score_agent.net.pts_encoder.forward = build_split2_forward(
-                    score_agent.net.pts_encoder, npu_backend,
-                )
-                print("PointNet2 pts_encoder -> GE split-2 fullgraph (Half1=SA0+1, Half2=SA2+3, eager chain)")
-            else:
-                # ---- torch_op eager-fallback path (genpose2_build / torch 2.1) ----
-                # dynamo traces via Meta registration; ctypes-based wrappers can't be traced.
-                try:
-                    import sys as _sys
-                    _sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'ascendc_kernels', 'torch_op'))
-                    from register_meta import load_all_torch_ops
-                    load_all_torch_ops()
-
-                    # FPS: original signature (xyz, npoint) -> torch op (xyz, npoint, num_cores)
-                    def _fps_via_op(xyz, npoints):
-                        return torch.ops.npu.fps_ascendc(xyz, npoints, _num_cores)
-                    _pn2_utils.furthest_point_sample = _fps_via_op
-
-                    # Ball query: original signature (radius, nsample, xyz, new_xyz) -> torch op (xyz, new_xyz, radius, nsample, num_cores)
-                    def _ball_query_via_op(radius, nsample, xyz, new_xyz):
-                        return torch.ops.npu.ball_query_ascendc(xyz, new_xyz, radius, nsample, _num_cores)
-                    _pn2_utils.ball_query = _ball_query_via_op
-
-                    # Group points: original signature (features, idx) -> torch op (features, idx, num_cores)
-                    def _grouping_via_op(features, idx):
-                        return torch.ops.npu.group_points_ascendc(features, idx, _num_cores)
-                    _pn2_utils.grouping_operation = _grouping_via_op
-
-                    print(f"FPS/ball_query/grouping use registered torch.ops.npu.*_ascendc (dynamo-traceable)")
-                except Exception as _e:
-                    print(f"[WARN] torch_op not available ({_e}), AscendC kernels stay ctypes-based")
-
-                # gather_operation has no torch op wrapper yet — keep it eager via @dynamo.disable
-                _pn2_utils.gather_operation = torch._dynamo.disable(_pn2_utils.gather_operation)
-                score_agent.net.pts_encoder.forward = torch.compile(
-                    score_agent.net.pts_encoder.forward,
-                    dynamic=False, fullgraph=False, backend=npu_backend,
-                )
-                print("PointNet2 pts_encoder compiled with TorchAir (fullgraph=False, op-break eager)")
 
     cfg.agent_type = 'energy'
     energy_agent = PoseNet(cfg)
@@ -231,8 +136,7 @@ if not is_om_model:
 else:
     from om_wrappers import (create_score_network, create_ode_sampler,
                              DINOv2Wrapper, EnergyNetWrapper,
-                             PointNet2EncoderWrapper, PointNet2SplitOM,
-                             PointNet2AscendC, PointNet2SplitAscendC,
+                             PointNet2EncoderWrapper,
                              ScaleNetWrapper)
     from networks.gf_algorithms.sde import init_sde, ve_sde_numpy
     from datasets.datasets_omni6dpose import process_batch_numpy
@@ -241,67 +145,18 @@ else:
     prior_fn, _, sde_fn, sampling_eps, _ = init_sde('ve')
     pointnet2_score_om_path = getattr(cfg, 'pretrained_pointnet2_score_model_path', None)
 
-    # POINTNET2_BACKEND options:
-    #   split_om:      CPU indexing (fpsample+OMP) + per-SA OM MLP
-    #   split_ascendc: NPU indexing (AscendC kernels) + per-SA OM MLP
-    #   ascendc:       full PTH model + AscendC kernel patches (no split)
-    #   (default):     monolithic PointNet2 OM
-    pn2_backend = os.environ.get('POINTNET2_BACKEND', '')
-    split_om_dir = os.environ.get('POINTNET2_SPLIT_OM_DIR', './om_models')
-    score_pth_path = './results/ckpts/ScoreNet/scorenet.pth'
-    energy_pth_path = './results/ckpts/EnergyNet/energynet.pth'
-
-    score_pointnet2_encoder = None
-    energy_pointnet2_encoder = None
-
-    if pn2_backend == 'split_om':
-        score_pointnet2_encoder = PointNet2SplitOM(
-            om_dir=split_om_dir, device=cfg.device, name_suffix='_from_score')
-        energy_pointnet2_encoder = PointNet2SplitOM(
-            om_dir=split_om_dir, device=cfg.device, name_suffix='_from_energy')
-        print(f"Using split PointNet2 (CPU indexing + OM MLP) from {split_om_dir}")
-    elif pn2_backend == 'split_ascendc':
-        score_pointnet2_encoder = PointNet2SplitAscendC(
-            om_dir=split_om_dir, device=cfg.device, name_suffix='_from_score')
-        energy_pointnet2_encoder = PointNet2SplitAscendC(
-            om_dir=split_om_dir, device=cfg.device, name_suffix='_from_energy')
-        print(f"Using split PointNet2 (AscendC indexing + OM MLP) from {split_om_dir}")
-    elif pn2_backend == 'ascendc':
-        score_pointnet2_encoder = PointNet2AscendC(
-            pth_checkpoint_path=score_pth_path, device=cfg.device, patch_mode='ascendc')
-        energy_pointnet2_encoder = PointNet2AscendC(
-            pth_checkpoint_path=energy_pth_path, device=cfg.device, patch_mode='ascendc')
-        print(f"Using AscendC PointNet2 (full PTH + AscendC NPU kernels)")
-    elif pn2_backend == 'cpu_ops':
-        score_pointnet2_encoder = PointNet2AscendC(
-            pth_checkpoint_path=score_pth_path, device=cfg.device, patch_mode='graspnet_cpu')
-        energy_pointnet2_encoder = PointNet2AscendC(
-            pth_checkpoint_path=energy_pth_path, device=cfg.device, patch_mode='graspnet_cpu')
-        print(f"Using CPU-ops PointNet2 (full PTH + CPU fpsample/OMP)")
-    elif pn2_backend == 'fps_outside':
-        from om_wrappers import PointNet2FpsOutside
-        score_pointnet2_encoder = PointNet2FpsOutside(om_dir='/tmp/sa_layer_score', device=cfg.device)
-        energy_pointnet2_encoder = PointNet2FpsOutside(om_dir='/tmp/sa_layer_energy', device=cfg.device)
-        print(f"Using PointNet2 FpsOutside (ctypes fps + sa_layer OM)")
-
-    # When using a custom PointNet2 encoder, don't pass pointnet2_om_path (avoid loading monolithic OM)
-    score_om_path = None if score_pointnet2_encoder else pointnet2_score_om_path
-
+    # OM path: monolithic PointNet2 OM (pointnet2_from_{score,energy}.om, built via ge_ops + ATC keep_dtype)
     score_net = create_score_network(
         checkpoint_path=cfg.pretrained_score_model_path,
         device=cfg.device,
-        pointnet2_om_path=score_om_path,
-        pointnet2_encoder=score_pointnet2_encoder,
+        pointnet2_om_path=pointnet2_score_om_path,
     )
     sde_dir = {'prior_fn': prior_fn, 'sde_fn': ve_sde_numpy}
     sampler = create_ode_sampler(score_network=score_net, sde=sde_dir, device=cfg.device)
 
     energy_net = EnergyNetWrapper(cfg.pretrained_energy_model_path, device=cfg.device)
-    if energy_pointnet2_encoder is not None:
-        pointnet2_energy_encoder = energy_pointnet2_encoder
-    else:
-        pointnet2_energy_encoder = PointNet2EncoderWrapper(
-            cfg.pretrained_pointnet2_energy_model_path, device=cfg.device)
+    pointnet2_energy_encoder = PointNet2EncoderWrapper(
+        cfg.pretrained_pointnet2_energy_model_path, device=cfg.device)
     print(f"Using EnergyNet OM: {cfg.pretrained_energy_model_path}")
 
     if cfg.pretrained_scale_model_path:
@@ -549,20 +404,6 @@ pbar = tqdm(total=total_objects)
 
 for i in range(30):
     add_dataloader()
-
-# TorchAir warmup: trigger torch.compile compilation before timed loop
-if os.environ.get('USE_TORCHAIR'):
-    with torch.no_grad():
-        _pose_dim = 9 if cfg.pose_mode == 'rot_matrix' else 7
-        score_agent.net.pose_score_net({
-            'pts_feat': torch.randn(1, 1024, device=cfg.device),
-            'rgb_feat': None,
-            'sampled_pose': torch.randn(1, _pose_dim, device=cfg.device),
-            't': torch.randn(1, 1, device=cfg.device),
-        })
-        if os.environ.get('TORCHAIR_PT2'):
-            score_agent.net.pts_encoder(torch.randn(1, 1024, 387, device=cfg.device))
-    print("TorchAir warmup done (compilation triggered, excluded from timing)")
 
 perf_stats = {
     'score_time': [],

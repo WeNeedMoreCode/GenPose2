@@ -204,21 +204,11 @@ def inference_score_decoupled(save_path):
 
     pointnet2_om_path = getattr(cfg, 'pretrained_pointnet2_score_model_path', None)
 
-    # POINTNET2_BACKEND=split_om: use split PointNet2 (CPU indexing + per-SA OM MLP)
-    pointnet2_split_encoder = None
-    if os.environ.get('POINTNET2_BACKEND') == 'split_om' and is_om_model:
-        from om_wrappers import PointNet2SplitOM
-        split_om_dir = os.environ.get('POINTNET2_SPLIT_OM_DIR', './om_models')
-        pointnet2_split_encoder = PointNet2SplitOM(
-            om_dir=split_om_dir, device=cfg.device, name_suffix='_from_score')
-        print(f"Using split PointNet2 OMs from {split_om_dir} (suffix=_from_score)")
-
     # Create Score Network wrapper (automatically uses OM or PyTorch)
     score_net = create_score_network(
         checkpoint_path=cfg.pretrained_score_model_path,
         device=cfg.device,
         pointnet2_om_path=pointnet2_om_path,  # Pass None for PyTorch, path for OM
-        pointnet2_encoder=pointnet2_split_encoder,
     )
     if is_om_model:
         from networks.gf_algorithms.sde import ve_sde_numpy
@@ -329,17 +319,11 @@ def inference_energy(score_path, save_path):
     all_pred_pose, _ = pickle.load(open(score_path, 'rb'))
 
     if is_om_model:
-        from om_wrappers import EnergyNetWrapper, PointNet2EncoderWrapper, PointNet2SplitOM
+        from om_wrappers import EnergyNetWrapper, PointNet2EncoderWrapper
         energy_net = EnergyNetWrapper(cfg.pretrained_energy_model_path, device=cfg.device)
-        # Load PointNet2 from energy checkpoint for pts_feat extraction
-        if os.environ.get('POINTNET2_BACKEND') == 'split_om':
-            split_om_dir = os.environ.get('POINTNET2_SPLIT_OM_DIR', './om_models')
-            pointnet2_encoder = PointNet2SplitOM(
-                om_dir=split_om_dir, device=cfg.device, name_suffix='_from_energy')
-            print(f"Using split PointNet2 OMs from {split_om_dir} (suffix=_from_energy)")
-        else:
-            pointnet2_encoder = PointNet2EncoderWrapper(cfg.pretrained_pointnet2_energy_model_path, device=cfg.device)
-            print(f"Using PointNet2 (from energy): {cfg.pretrained_pointnet2_energy_model_path}")
+        # Load PointNet2 from energy checkpoint for pts_feat extraction (monolithic OM)
+        pointnet2_encoder = PointNet2EncoderWrapper(cfg.pretrained_pointnet2_energy_model_path, device=cfg.device)
+        print(f"Using PointNet2 (from energy): {cfg.pretrained_pointnet2_energy_model_path}")
     else:
         cfg.agent_type = 'energy'
         energy_agent = PoseNet(cfg)
@@ -737,17 +721,12 @@ if __name__ == '__main__':
         import torch_npu
         torch_npu.npu.set_compile_mode(jit_compile=False)
 
-        backend = os.environ.get("POINTNET2_BACKEND", "ascendc")
-        if backend == "graspnet_cpu":
-            from ascendc_kernels.graspnet_cpu_patches import patch_graspnet_cpu_ops
-            patch_graspnet_cpu_ops()
-        else:
-            from ascendc_kernels.fps_ascendc import patch_pointnet2_fps
-            from ascendc_kernels.group_points_ascendc import patch_group_points
-            from ascendc_kernels.ball_query_ascendc import patch_ball_query
-            patch_pointnet2_fps(num_cores=8)
-            patch_group_points(num_cores=8)
-            patch_ball_query(num_cores=8)
+        from ascendc_kernels.kernel_ctypes.fps import patch_pointnet2_fps
+        from ascendc_kernels.kernel_ctypes.group_points import patch_group_points
+        from ascendc_kernels.kernel_ctypes.ball_query import patch_ball_query
+        patch_pointnet2_fps(num_cores=8)
+        patch_group_points(num_cores=8)
+        patch_ball_query(num_cores=8)
 
         # Wrap custom ops with timing instrumentation
         from networks.pts_encoder.pointnet2_utils.pointnet2 import pointnet2_utils

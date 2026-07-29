@@ -13,3 +13,20 @@ common
 test*
 *.md
 syx_records/*
+
+# datasets and pretrained models
+datasets/
+dinov2/
+omni6dpose-*/
+results/
+
+# build artifacts / ATC cache
+kernel_meta/
+exception_cb_*
+fusion_result.json
+
+# backups
+*.bak*
+
+# personal dev docs
+syx_docs/

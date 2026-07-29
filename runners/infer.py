@@ -39,9 +39,9 @@ class GenPose2:
         self.cfg = self._get_config(score_model_path, energy_model_path, scale_model_path)
 
         # Patch PointNet2 operators with AscendC kernels before loading models
-        from ascendc_kernels.fps_ascendc import patch_pointnet2_fps
-        from ascendc_kernels.group_points_ascendc import patch_group_points
-        from ascendc_kernels.ball_query_ascendc import patch_ball_query
+        from ascendc_kernels.kernel_ctypes.fps import patch_pointnet2_fps
+        from ascendc_kernels.kernel_ctypes.group_points import patch_group_points
+        from ascendc_kernels.kernel_ctypes.ball_query import patch_ball_query
         patch_pointnet2_fps(num_cores=8)
         patch_group_points(num_cores=8)
         patch_ball_query(num_cores=8)
