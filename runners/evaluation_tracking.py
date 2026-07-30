@@ -169,9 +169,8 @@ else:
             dino_model = DINOv2Wrapper(dino_om_path, device=cfg.device)
             print(f"Using DINOv2 OM: {dino_om_path}")
         else:
-            import torch.hub
-            dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14').to(cfg.device)
-            dino_model.requires_grad_(False)
+            from om_wrappers import load_dinov2_pytorch
+            dino_model = load_dinov2_pytorch(cfg.device)
             print("Using DINOv2 PyTorch")
 
         def extract_dino_features(batch_sample):

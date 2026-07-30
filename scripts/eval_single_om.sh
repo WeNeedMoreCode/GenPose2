@@ -11,7 +11,7 @@ CUDA_VISIBLE_DEVICES=0 python runners/evaluation_single.py \
 --data_path omni6dpose-000000/ROPE/ \
 --sampler_mode ode \
 --percentage_data_for_test 1.0 \
---batch_size 16 \
+--batch_size 4 \
 --seed 0 \
 --result_dir single_om \
 --eval_repeat_num 50 \

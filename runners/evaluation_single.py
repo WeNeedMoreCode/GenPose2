@@ -102,9 +102,8 @@ def get_dino_model():
             print("DINOv2 OM loaded successfully")
         else:
             print("Loading DINOv2 model for preprocessing...")
-            import torch.hub
-            _dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14').to(cfg.device)
-            _dino_model.requires_grad_(False)
+            from om_wrappers import load_dinov2_pytorch
+            _dino_model = load_dinov2_pytorch(cfg.device)
             print("DINOv2 loaded successfully")
     return _dino_model
 
@@ -721,12 +720,35 @@ if __name__ == '__main__':
         import torch_npu
         torch_npu.npu.set_compile_mode(jit_compile=False)
 
-        from ascendc_kernels.kernel_ctypes.fps import patch_pointnet2_fps
-        from ascendc_kernels.kernel_ctypes.group_points import patch_group_points
-        from ascendc_kernels.kernel_ctypes.ball_query import patch_ball_query
-        patch_pointnet2_fps(num_cores=8)
-        patch_group_points(num_cores=8)
-        patch_ball_query(num_cores=8)
+        pn2_backend = os.environ.get("POINTNET2_BACKEND", "torch_ops")
+        if pn2_backend == "ctypes":
+            # ctypes 直调（kernel_ctypes host lib）
+            from ascendc_kernels.kernel_ctypes.fps import patch_pointnet2_fps
+            from ascendc_kernels.kernel_ctypes.ball_query import patch_ball_query
+            from ascendc_kernels.kernel_ctypes.group_points import patch_group_points
+            patch_pointnet2_fps(num_cores=8)
+            patch_ball_query(num_cores=8)
+            patch_group_points(num_cores=8)
+            print("Using AscendC PointNet2 ops via ctypes (kernel_ctypes host lib)")
+        elif pn2_backend == "graspnet_cpu":
+            # CPU OMP 兜底（无 NPU 时用 CPU fpsample + GraspNet OMP）
+            from ascendc_kernels.kernel_ctypes.graspnet_cpu_patches import patch_graspnet_cpu_ops
+            patch_graspnet_cpu_ops()
+            print("Using graspnet_cpu PointNet2 ops (CPU fpsample + GraspNet OMP)")
+        elif pn2_backend == "torch_native":
+            # 纯 torch pointnet2_ops（GenPosePlus/pointnet2_ops.py，最原始 fallback，不 patch）
+            print("Using pure-torch PointNet2 ops (pointnet2_ops.py, no AscendC kernels)")
+        else:
+            # 默认 torch_ops：注册 torch.ops.npu.*_ascendc + patch pointnet2_utils
+            import sys as _sys
+            _sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'ascendc_kernels', 'torch_ops'))
+            from register_meta import load_all_torch_ops
+            load_all_torch_ops()
+            from networks.pts_encoder.pointnet2_utils.pointnet2 import pointnet2_utils as _pn2
+            _pn2.furthest_point_sample = lambda xyz, npoints: torch.ops.npu.fps_ascendc(xyz, npoints, 8)
+            _pn2.ball_query = lambda radius, nsample, xyz, new_xyz: torch.ops.npu.ball_query_ascendc(xyz, new_xyz, radius, nsample, 8)
+            _pn2.grouping_operation = lambda features, idx: torch.ops.npu.group_points_ascendc(features, idx, 8)
+            print("Using AscendC PointNet2 ops via torch.ops.npu.*_ascendc (torch_ops, default)")
 
         # Wrap custom ops with timing instrumentation
         from networks.pts_encoder.pointnet2_utils.pointnet2 import pointnet2_utils
