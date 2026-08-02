@@ -145,7 +145,7 @@ else:
     prior_fn, _, sde_fn, sampling_eps, _ = init_sde('ve')
     pointnet2_score_om_path = getattr(cfg, 'pretrained_pointnet2_score_model_path', None)
 
-    # OM path: monolithic PointNet2 OM (pointnet2_from_{score,energy}.om, built via ge_ops + ATC keep_dtype)
+    # OM path: monolithic PointNet2 OM (pointnet2_from_{score,energy}.om, built via ge_ops + ATC)
     score_net = create_score_network(
         checkpoint_path=cfg.pretrained_score_model_path,
         device=cfg.device,
