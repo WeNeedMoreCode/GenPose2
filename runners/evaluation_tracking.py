@@ -14,19 +14,6 @@ import time
 import cv2
 import glob
 import numpy as np
-
-# --- pointnet2 I/O dump (env-gated; precision diff between backends) ---
-_PN2_DUMP = {'dir': os.environ.get('DUMP_PN2_DIR'),
-             'max': int(os.environ.get('DUMP_PN2_MAX', '20')) if os.environ.get('DUMP_PN2_DIR') else 0,
-             'score': 0, 'energy': 0}
-def _pn2_dump(role, inp, out):
-    if not _PN2_DUMP['dir'] or _PN2_DUMP[role] >= _PN2_DUMP['max']:
-        return
-    os.makedirs(_PN2_DUMP['dir'], exist_ok=True)
-    i = _PN2_DUMP[role]
-    np.save(os.path.join(_PN2_DUMP['dir'], role + '_in_%04d.npy' % i), np.asarray(inp))
-    np.save(os.path.join(_PN2_DUMP['dir'], role + '_out_%04d.npy' % i), np.asarray(out))
-    _PN2_DUMP[role] += 1
 from tqdm import tqdm
 import _pickle as cPickle
 import pickle
@@ -90,7 +77,7 @@ if not is_om_model:
     torch_npu.npu.set_compile_mode(jit_compile=False)
     pn2_backend = os.environ.get("POINTNET2_BACKEND", "torch_ops")
     if pn2_backend == "ctypes":
-        # ctypes 直调（kernel_ctypes host lib）
+        # ctypes direct call (kernel_ctypes host lib)
         from ascendc_kernels.kernel_ctypes.fps import patch_pointnet2_fps
         from ascendc_kernels.kernel_ctypes.ball_query import patch_ball_query
         from ascendc_kernels.kernel_ctypes.group_points import patch_group_points
@@ -99,16 +86,16 @@ if not is_om_model:
         patch_group_points(num_cores=8)
         print("Using AscendC PointNet2 ops via ctypes (kernel_ctypes host lib)")
     elif pn2_backend == "graspnet_cpu":
-        # CPU OMP 兜底（无 NPU 时用 CPU fpsample + GraspNet OMP）
+        # CPU OMP fallback (CPU fpsample + GraspNet OMP when no NPU)
         from ascendc_kernels.kernel_ctypes.graspnet_cpu_patches import patch_graspnet_cpu_ops
         patch_graspnet_cpu_ops()
         print("Using graspnet_cpu PointNet2 ops (CPU fpsample + GraspNet OMP)")
     elif pn2_backend == "torch_native":
-        # 纯 torch pointnet2_ops（GenPosePlus/pointnet2_ops.py，最原始 fallback，不 patch）
-        # NPU 上没装 CUDA pointnet2_ops 时，pointnet2_utils 的 import pointnet2_ops 默认拿到它
+        # Pure-torch pointnet2_ops (GenPosePlus/pointnet2_ops.py, original fallback, no patch)
+        # When CUDA pointnet2_ops isn't installed on NPU, pointnet2_utils's import defaults to it
         print("Using pure-torch PointNet2 ops (pointnet2_ops.py, no AscendC kernels)")
     else:
-        # 默认 torch_ops：注册 torch.ops.npu.*_ascendc + patch pointnet2_utils
+        # Default torch_ops: register torch.ops.npu.*_ascendc + patch pointnet2_utils
         import sys as _sys
         _sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'ascendc_kernels', 'torch_ops'))
         from register_meta import load_all_torch_ops
@@ -210,12 +197,7 @@ def work_batch(test_batch, prev_pose):
         t0 = time.time()
         # DINOv2 + PointNet2 feature extraction
         rgb_feat = extract_dino_features(batch_sample)
-        t_dino = time.time()
         pts_feat = score_net.extract_pts_feat(batch_sample['pts'], rgb_feat)
-        t_pt2 = time.time()
-        _pn2_dump('score', np.concatenate([batch_sample['pts'], rgb_feat], axis=-1), pts_feat)
-        if os.environ.get('POINTNET2_DEBUG'):
-            print(f"  DINOv2: {(t_dino-t0)*1000:.1f}ms, PointNet2: {(t_pt2-t_dino)*1000:.1f}ms")
 
         # Construct init_x: repeat prev_pose and add noise 
         _prev_pose = prev_pose.cpu().numpy().copy()
@@ -250,7 +232,6 @@ def work_batch(test_batch, prev_pose):
         # OM energy
         pts_with_rgb = np.concatenate([batch_sample['pts'], rgb_feat], axis=-1)  # [bs, 1024, 387]
         pts_feat_energy = pointnet2_energy_encoder(pts_with_rgb)
-        _pn2_dump('energy', pts_with_rgb, pts_feat_energy)
 
         pose_samples = score_pred_results.reshape(bs * repeat_num, -1).astype(np.float32)
         pose_samples[:, -3:] -= np.repeat(batch_sample['pts_center'], repeat_num, axis=0)

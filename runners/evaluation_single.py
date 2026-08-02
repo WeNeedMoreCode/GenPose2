@@ -722,7 +722,7 @@ if __name__ == '__main__':
 
         pn2_backend = os.environ.get("POINTNET2_BACKEND", "torch_ops")
         if pn2_backend == "ctypes":
-            # ctypes 直调（kernel_ctypes host lib）
+            # ctypes direct call (kernel_ctypes host lib)
             from ascendc_kernels.kernel_ctypes.fps import patch_pointnet2_fps
             from ascendc_kernels.kernel_ctypes.ball_query import patch_ball_query
             from ascendc_kernels.kernel_ctypes.group_points import patch_group_points
@@ -731,15 +731,15 @@ if __name__ == '__main__':
             patch_group_points(num_cores=8)
             print("Using AscendC PointNet2 ops via ctypes (kernel_ctypes host lib)")
         elif pn2_backend == "graspnet_cpu":
-            # CPU OMP 兜底（无 NPU 时用 CPU fpsample + GraspNet OMP）
+            # CPU OMP fallback (CPU fpsample + GraspNet OMP when no NPU)
             from ascendc_kernels.kernel_ctypes.graspnet_cpu_patches import patch_graspnet_cpu_ops
             patch_graspnet_cpu_ops()
             print("Using graspnet_cpu PointNet2 ops (CPU fpsample + GraspNet OMP)")
         elif pn2_backend == "torch_native":
-            # 纯 torch pointnet2_ops（GenPosePlus/pointnet2_ops.py，最原始 fallback，不 patch）
+            # Pure-torch pointnet2_ops (GenPosePlus/pointnet2_ops.py, original fallback, no patch)
             print("Using pure-torch PointNet2 ops (pointnet2_ops.py, no AscendC kernels)")
         else:
-            # 默认 torch_ops：注册 torch.ops.npu.*_ascendc + patch pointnet2_utils
+            # Default torch_ops: register torch.ops.npu.*_ascendc + patch pointnet2_utils
             import sys as _sys
             _sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'ascendc_kernels', 'torch_ops'))
             from register_meta import load_all_torch_ops

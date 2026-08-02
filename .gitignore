@@ -30,3 +30,7 @@ fusion_result.json
 
 # personal dev docs
 syx_docs/
+
+# IDE / editor
+*.code-workspace
+.vscode/
