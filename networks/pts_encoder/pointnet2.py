@@ -281,7 +281,8 @@ class Pointnet2ClsMSGFus(nn.Module):
         li_xyz, li_features, idx = self.SA_modules[i](l_xyz[i], l_features[i], return_idx=True)
         l_xyz.append(li_xyz)
         l_features.append(li_features)
-        assert i == len(self.SA_modules) - 1
+        if i != len(self.SA_modules) - 1:
+            raise RuntimeError("unexpected SA module index after forward")
 
         return l_features[-1].squeeze(-1)
 

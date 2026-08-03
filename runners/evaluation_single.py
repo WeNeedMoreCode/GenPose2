@@ -394,7 +394,8 @@ def aggregate_pose(score_path, energy_path, save_path):
     assert os.path.exists(score_path)
     all_pred_pose, _ = pickle.load(open(score_path, 'rb'))
 
-    assert os.path.exists(energy_path)
+    if not os.path.exists(energy_path):
+        raise FileNotFoundError(f"Energy cache not found: {energy_path}")
     all_pred_energy = pickle.load(open(energy_path, 'rb'))
     # ensure tensors (OM energy path saves numpy)
     if is_om_model:
@@ -445,7 +446,8 @@ def inference_scale(score_path, aggregate_path, save_path):
     if os.path.exists(save_path):
         return
     scale_path = getattr(cfg, 'pretrained_scale_model_path', None)
-    assert os.path.exists(scale_path)
+    if not os.path.exists(scale_path):
+        raise FileNotFoundError(f"Scale checkpoint not found: {scale_path}")
     assert os.path.exists(score_path)
     _, all_score_feature = pickle.load(open(score_path, 'rb'))
     assert os.path.exists(aggregate_path)
