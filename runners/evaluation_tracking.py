@@ -105,6 +105,8 @@ if not is_om_model:
         _pn2.ball_query = lambda radius, nsample, xyz, new_xyz: torch.ops.npu.ball_query_ascendc(xyz, new_xyz, radius, nsample, 8)
         _pn2.grouping_operation = lambda features, idx: torch.ops.npu.group_points_ascendc(features, idx, 8)
         print("Using AscendC PointNet2 ops via torch.ops.npu.*_ascendc (torch_ops, default)")
+    from networks.pts_encoder.pointnet2_utils.pointnet2 import pointnet2_utils as _pn2_chk
+    print(f"=== BACKEND={pn2_backend}  actual fps={_pn2_chk.furthest_point_sample}")
     cfg.agent_type = 'score'
     score_agent = PoseNet(cfg)
     score_agent.load_ckpt(model_dir=cfg.pretrained_score_model_path, model_path=True, load_model_only=True)
