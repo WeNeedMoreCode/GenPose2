@@ -1,3 +1,4 @@
+fpsample
 scipy==1.18.0
 numpy==2.5.1
 tensorboardX==2.6.5
