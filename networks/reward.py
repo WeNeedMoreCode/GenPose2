@@ -148,8 +148,8 @@ def sort_poses_by_energy(poses, energy):
     indices_1_trans = indices_1.permute(2, 1, 0)[1].reshape(1, -1)
     rot_index = torch.cat((indices_0, indices_1_rot), dim=0).cpu().numpy().tolist()
     trans_index = torch.cat((indices_0, indices_1_trans), dim=0).cpu().numpy().tolist()
-    sorted_poses = poses[rot_index]
-    sorted_poses[:, -3:] = poses[trans_index][:, -3:]
+    sorted_poses = poses[tuple(rot_index)]
+    sorted_poses[:, -3:] = poses[tuple(trans_index)][:, -3:]
     sorted_poses = sorted_poses.view(repeat_num, bs, -1).permute(1, 0, 2)
     
     return sorted_poses, sorted_energy
