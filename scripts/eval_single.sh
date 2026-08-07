@@ -3,10 +3,10 @@ CUDA_VISIBLE_DEVICES=0 python runners/evaluation_single.py \
 --pretrained_score_model_path results/ckpts/ScoreNet/scorenet.pth \
 --pretrained_energy_model_path results/ckpts/EnergyNet/energynet.pth \
 --pretrained_scale_model_path results/ckpts/ScaleNet/scalenet.pth \
---data_path Omni6DPose_ROPE_PATH \
+--data_path omni6dpose-000000/ROPE/ \
 --sampler_mode ode \
 --percentage_data_for_test 1.0 \
---batch_size 128 \
+--batch_size 32 \
 --seed 0 \
 --result_dir single \
 --eval_repeat_num 50 \
@@ -15,3 +15,4 @@ CUDA_VISIBLE_DEVICES=0 python runners/evaluation_single.py \
 --dino pointwise \
 --num_worker 32 \
 --real_drop 3 \
+--device npu:0

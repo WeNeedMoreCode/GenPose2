@@ -616,7 +616,36 @@ def process_batch(batch_sample,
     processed_sample['zero_mean_gt_pose'][:, -3:] -= zero_mean
     processed_sample['pts_center'] = zero_mean
 
-    return processed_sample 
+    return processed_sample
+
+
+def process_batch_numpy(batch_sample, pose_mode='quat_wxyz'):
+    """Numpy-only version of process_batch for OM inference path.
+
+    Only produces the keys needed by OM inference: pts, roi_rgb, roi_xs, roi_ys, pts_center.
+    Skips gt_pose, sym_info, zero_mean_pts etc. which are only used for evaluation metrics.
+    """
+    processed_sample = {}
+
+    # pts: [bs, 1024, 3]
+    pts = batch_sample['pcl_in'].cpu().numpy().astype(np.float32)
+    processed_sample['pts'] = pts
+
+    # pts_center = mean of pts
+    zero_mean = np.mean(pts[:, :, :3], axis=1, keepdims=True)  # [bs, 1, 3]
+    processed_sample['pts_center'] = zero_mean[:, 0, :]  # [bs, 3]
+
+    # roi_rgb: [bs, 3, imgsize, imgsize]
+    roi_rgb = batch_sample['roi_rgb'].cpu().numpy().astype(np.float32)
+    processed_sample['roi_rgb'] = roi_rgb
+
+    # roi_xs, roi_ys: [bs, 1024]
+    roi_xs = batch_sample['roi_xs'].cpu().numpy().astype(np.int64)
+    roi_ys = batch_sample['roi_ys'].cpu().numpy().astype(np.int64)
+    processed_sample['roi_xs'] = roi_xs
+    processed_sample['roi_ys'] = roi_ys
+
+    return processed_sample
     
 
 if __name__ == '__main__':

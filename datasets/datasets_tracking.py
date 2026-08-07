@@ -113,6 +113,9 @@ class Omni6DPoseDataSet(data.Dataset):
 
         self.per_obj = per_obj
         self.per_obj_id = None
+        self._cached_depth = None
+        self._cached_mask = None
+        self._cached_rgb = None
 
         tmp = []
         for img_path in self.img_list:
@@ -144,10 +147,22 @@ class Omni6DPoseDataSet(data.Dataset):
         obj = valid_objects[index % self.num_valid]
         inst_name = obj.meta.oid
 
-        rgb = Dataset.load_color(img_path + "color.png")
-        depth = Dataset.load_depth(img_path + ('depth_syn' if self.cfg.perfect_depth else 'depth') + '.exr')
+        try:
+            rgb = Dataset.load_color(img_path + "color.png")
+            depth = Dataset.load_depth(img_path + ('depth_syn' if self.cfg.perfect_depth else 'depth') + '.exr')
+            mask = Dataset.load_mask(img_path + 'mask.exr')
+        except Exception as e:
+            print(f"[WARN] Failed to load data for {img_path}: {e}, using cached data from previous frame")
+            depth = self._cached_depth
+            mask = self._cached_mask
+            rgb = self._cached_rgb
+            used_cache = True
+        else:
+            self._cached_depth = depth
+            self._cached_mask = mask
+            self._cached_rgb = rgb
+            used_cache = False
         depth[depth > 1e3] = 0
-        mask = Dataset.load_mask(img_path + 'mask.exr')
         if not (mask.shape[:2] == depth.shape[:2] == rgb.shape[:2]):
             assert 0
             return self.__getitem__((index + 1) % self.__len__())
@@ -302,6 +317,7 @@ class Omni6DPoseDataSet(data.Dataset):
         data_dict['class_name'] = obj.meta.class_name
         data_dict['object_name'] = inst_name
         data_dict['is_valid'] = 1
+        data_dict['_corrupted'] = used_cache
 
         # xyz = depth2xyz(depth, intrinsics)
         # choose = np.logical_and(mask == inst_idx, depth > 0).flatten().nonzero()[0]

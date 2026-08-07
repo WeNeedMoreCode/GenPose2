@@ -17,7 +17,6 @@ from configs.config import get_config
 from utils.genpose_utils import encode_axes
 
 
-
 class GFObjectPose(nn.Module):
     dino_name = 'dinov2_vits14'
     dino_dim = 384
@@ -47,32 +46,9 @@ class GFObjectPose(nn.Module):
             self.embedding_dim = GFObjectPose.embedding_dim
         
         ''' encode pts '''
-        if self.cfg.pts_encoder == 'pointnet':
-            assert cfg.dino != 'pointwise' # not supported yet
-            self.pts_encoder = PointNetfeat(num_points=self.cfg.num_points, out_dim=1024)
-        elif self.cfg.pts_encoder == 'pointnet2':
-            if cfg.dino == 'pointwise':
-                self.pts_encoder = Pointnet2ClsMSGFus(self.dino_dim)
-            else:
-                self.pts_encoder = Pointnet2ClsMSG(0)
-        elif self.cfg.pts_encoder == 'pointnet_and_pointnet2':
-            assert cfg.dino != 'pointwise' # not supported yet
-            self.pts_pointnet_encoder = PointNetfeat(num_points=self.cfg.num_points, out_dim=1024)
-            self.pts_pointnet2_encoder = Pointnet2ClsMSG(0)
-            self.fusion_layer = nn.Linear(2048, 1024)
-            self.act = nn.ReLU()
-        else:
-            raise NotImplementedError
-        
-        ''' score network'''
-        # if self.cfg.sde_mode == 'edm':
-        #     self.pose_score_net = PoseDecoderNet(
-        #         self.marginal_prob_fn,
-        #         sigma_data=1.4148, 
-        #         pose_mode=self.cfg.pose_mode, 
-        #         regression_head=self.cfg.regression_head
-        #     )
-        # else:
+
+        self.pts_encoder = Pointnet2ClsMSGFus(self.dino_dim)
+
         per_point_feat = False
         if self.cfg.agent_type == 'score':
             self.pose_score_net = PoseScoreNet(
@@ -98,19 +74,28 @@ class GFObjectPose(nn.Module):
 
         Args:
             data (dict): batch example without pointcloud feature. {'pts': [bs, num_pts, 3], 'sampled_pose': [bs, pose_dim], 't': [bs, 1]}
+            precomputed_rgb_feat (torch.Tensor, optional): Pre-computed DINOv2 features [B, 1024, 384].
+                If provided, will skip internal DINOv2 computation and use these features directly.
         Returns:
             data (dict): batch example with pointcloud feature. {'pts': [bs, num_pts, 3], 'pts_feat': [bs, c], 'sampled_pose': [bs, pose_dim], 't': [bs, 1]}
         """
         pts = data['pts']
         if self.cfg.dino == 'pointwise':
-            roi_rgb = data['roi_rgb']
-            feat = self.dino.get_intermediate_layers(roi_rgb)[0]
-            xs = data['roi_xs'] // 14
-            ys = data['roi_ys'] // 14
-            pos = xs * 16 + ys
-            pos = torch.unsqueeze(pos, -1).expand(-1, -1, self.dino_dim)
-            rgb_feat = torch.gather(feat, 1, pos)
-            rgb_feat.requires_grad_(False)
+            # Use precomputed features if provided, otherwise compute with DINOv2
+            precomputed_rgb_feat = getattr(data,'rgb_feat', None)
+            if precomputed_rgb_feat:
+                rgb_feat = precomputed_rgb_feat
+                rgb_feat = rgb_feat.to(pts.device)
+            else:
+                # Original path: compute DINOv2 features internally
+                roi_rgb = data['roi_rgb']
+                feat = self.dino.get_intermediate_layers(roi_rgb)[0]
+                xs = data['roi_xs'] // 14
+                ys = data['roi_ys'] // 14
+                pos = xs * 16 + ys
+                pos = torch.unsqueeze(pos, -1).expand(-1, -1, self.dino_dim)
+                rgb_feat = torch.gather(feat, 1, pos)
+                rgb_feat.requires_grad_(False)
         if self.cfg.pts_encoder == 'pointnet':
             assert 0
             pts_feat = self.pts_encoder(pts.permute(0, 2, 1))    # -> (bs, 3, 1024)
@@ -194,6 +179,7 @@ class GFObjectPose(nn.Module):
                 'pts_feat': [bs, c]
                 'sampled_pose': [bs, pose_dim]
                 't': [bs, 1]
+                'precomputed_rgb_feat': [bs, 1024, 384] (optional)
             }
         '''
         if mode == 'score':

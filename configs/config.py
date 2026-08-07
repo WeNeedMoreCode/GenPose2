@@ -16,7 +16,7 @@ def get_config():
     parser.add_argument('--train_source', type=str, default='Omni6DPose')
     parser.add_argument('--val_source', type=str, default='Omni6DPose')
     parser.add_argument('--test_source', type=str, default='Omni6DPose')
-    parser.add_argument('--device', type=str, default='cuda')
+    parser.add_argument('--device', type=str, default='npu:0')
     parser.add_argument('--num_points', type=int, default=1024)
     parser.add_argument('--per_obj', type=str, default='')
     parser.add_argument('--num_workers', type=int, default=32)
@@ -34,12 +34,18 @@ def get_config():
     parser.add_argument('--s_theta_mode', type=str, default='score') 
     parser.add_argument('--norm_energy', type=str, default='identical')
     parser.add_argument('--dino', type=str, default='pointwise') # none / global / pointwise
+    parser.add_argument('--pretrained_dino_model_path', type=str, default=None,
+                        help='Path to DINOv2 OM model for inference. If None, uses torch.hub PyTorch model.')
     parser.add_argument('--scale_embedding', type=int, default=180)
     
     
     """ training """
     parser.add_argument('--agent_type', type=str, default='score', help='one of the [score, energy, energy_with_ranking, scale]')
     parser.add_argument('--pretrained_score_model_path', type=str)
+    parser.add_argument('--pretrained_pointnet2_score_model_path', type=str, default=None,
+                        help='Path to PointNet2 OM model (from scorenet) for decoupled inference')
+    parser.add_argument('--pretrained_pointnet2_energy_model_path', type=str, default=None,
+                        help='Path to PointNet2 OM model (from energynet) for energy stage')
     parser.add_argument('--pretrained_energy_model_path', type=str)
     parser.add_argument('--pretrained_scale_model_path', type=str)
     parser.add_argument('--distillation', default=False, action='store_true')

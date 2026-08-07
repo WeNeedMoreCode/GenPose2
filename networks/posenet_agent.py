@@ -91,9 +91,6 @@ class PoseNet(nn.Module):
         else:
             net = self.get_network('ScaleNet')
         net = net.to(self.cfg.device)
-        if self.cfg.parallel:
-            device_ids = list(range(self.cfg.num_gpu))
-            net = nn.DataParallel(net, device_ids=device_ids).cuda()
         return net
     
 
@@ -167,14 +164,14 @@ class PoseNet(nn.Module):
         if not os.path.exists(load_path):
             raise ValueError("Checkpoint {} not exists.".format(load_path))
 
-        checkpoint = torch.load(load_path)
+        checkpoint = torch.load(load_path, map_location=self.cfg.device)
         print("Loading checkpoint from {} ...".format(load_path))
-        
+
         if isinstance(self.net, nn.DataParallel):
             self.net.module.load_state_dict(checkpoint['model_state_dict'])
         else:
             self.net.load_state_dict(checkpoint['model_state_dict'])
-        
+
         if not load_model_only:
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])

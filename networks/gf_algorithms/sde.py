@@ -19,13 +19,22 @@ def ve_marginal_prob(x, t, sigma_min=0.01, sigma_max=90):
 
 def ve_sde(t, sigma_min=0.01, sigma_max=90):
     sigma = sigma_min * (sigma_max / sigma_min) ** t
-    drift_coeff = torch.tensor(0)
-    diffusion_coeff = sigma * torch.sqrt(torch.tensor(2 * (np.log(sigma_max) - np.log(sigma_min)), device=t.device))
+    device = t.device if hasattr(t, 'device') else 'cpu'
+    drift_coeff = torch.tensor(0, device=device)
+    diffusion_coeff = sigma * torch.sqrt(torch.tensor(2 * (np.log(sigma_max) - np.log(sigma_min)), device=device))
+    return drift_coeff, diffusion_coeff
+
+def ve_sde_numpy(t, sigma_min=0.01, sigma_max=90):
+    """Pure numpy version of ve_sde for ODE solver integration."""
+    sigma = sigma_min * (sigma_max / sigma_min) ** t
+    drift_coeff = 0.0
+    diffusion_coeff = float(sigma) * np.sqrt(2 * (np.log(sigma_max) - np.log(sigma_min)))
     return drift_coeff, diffusion_coeff
 
 def ve_prior(shape, sigma_min=0.01, sigma_max=90, T=1.0):
     _, sigma_max_prior = ve_marginal_prob(None, T, sigma_min=sigma_min, sigma_max=sigma_max)
-    return torch.randn(*shape) * sigma_max_prior
+    torch.manual_seed(0)
+    return torch.randn(*shape, dtype=torch.float32) * sigma_max_prior
 
 #----- VP SDE -----
 #------------------
@@ -42,7 +51,7 @@ def vp_sde(t, beta_0=0.1, beta_1=20):
     return drift_coeff, diffusion_coeff
 
 def vp_prior(shape, beta_0=0.1, beta_1=20):
-    return torch.randn(*shape)
+    return torch.randn(*shape, dtype=torch.float32)
 
 #----- sub-VP SDE -----
 #----------------------
@@ -70,12 +79,13 @@ def edm_marginal_prob(x, t, sigma_min=0.002, sigma_max=80):
     return mean, std
 
 def edm_sde(t, sigma_min=0.002, sigma_max=80):
-    drift_coeff = torch.tensor(0)
+    device = t.device if hasattr(t, 'device') else 'cpu'
+    drift_coeff = torch.tensor(0, device=device)
     diffusion_coeff = torch.sqrt(2 * t)
     return drift_coeff, diffusion_coeff
 
 def edm_prior(shape, sigma_min=0.002, sigma_max=80):
-    return torch.randn(*shape) * sigma_max
+    return torch.randn(*shape, dtype=torch.float32) * sigma_max
 
 def init_sde(sde_mode):
     # the SDE-related hyperparameters are copied from https://github.com/yang-song/score_sde_pytorch

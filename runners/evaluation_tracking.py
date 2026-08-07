@@ -69,55 +69,189 @@ def get_dataloader(data_dir: str):
     )
     return iter(dataloader)
 
-cfg.agent_type = 'score'
-score_agent = PoseNet(cfg)
-score_agent.load_ckpt(model_dir=cfg.pretrained_score_model_path, model_path=True, load_model_only=True)
-score_agent.eval()
+# PTH/OM model loading
+is_om_model = cfg.pretrained_score_model_path.endswith('.om')
 
-cfg.agent_type = 'energy'
-energy_agent = PoseNet(cfg)
-energy_agent.load_ckpt(model_dir=cfg.pretrained_energy_model_path, model_path=True, load_model_only=True)
-energy_agent.eval()
+if not is_om_model:
+    import torch_npu
+    torch_npu.npu.set_compile_mode(jit_compile=False)
+    cfg.agent_type = 'score'
+    score_agent = PoseNet(cfg)
+    score_agent.load_ckpt(model_dir=cfg.pretrained_score_model_path, model_path=True, load_model_only=True)
+    score_agent.eval()
 
-if cfg.pretrained_scale_model_path:
-    cfg.agent_type = 'scale'
-    scale_agent = PoseNet(cfg)
-    scale_agent.load_ckpt(model_dir=cfg.pretrained_scale_model_path, model_path=True, load_model_only=True)
-    scale_agent.eval()
+    cfg.agent_type = 'energy'
+    energy_agent = PoseNet(cfg)
+    energy_agent.load_ckpt(model_dir=cfg.pretrained_energy_model_path, model_path=True, load_model_only=True)
+    energy_agent.eval()
+
+    if cfg.pretrained_scale_model_path:
+        cfg.agent_type = 'scale'
+        scale_agent = PoseNet(cfg)
+        scale_agent.load_ckpt(model_dir=cfg.pretrained_scale_model_path, model_path=True, load_model_only=True)
+        scale_agent.eval()
+else:
+    from om_wrappers import (create_score_network, create_ode_sampler,
+                             DINOv2Wrapper, EnergyNetWrapper,
+                             PointNet2EncoderWrapper, ScaleNetWrapper)
+    from networks.gf_algorithms.sde import init_sde, ve_sde_numpy
+    from datasets.datasets_omni6dpose import process_batch_numpy
+    from utils.misc import get_pose_dim
+
+    prior_fn, _, sde_fn, sampling_eps, _ = init_sde('ve')
+    pointnet2_score_om_path = getattr(cfg, 'pretrained_pointnet2_score_model_path', None)
+
+    score_net = create_score_network(
+        checkpoint_path=cfg.pretrained_score_model_path,
+        device=cfg.device,
+        pointnet2_om_path=pointnet2_score_om_path,
+    )
+    sde_dir = {'prior_fn': prior_fn, 'sde_fn': ve_sde_numpy}
+    sampler = create_ode_sampler(score_network=score_net, sde=sde_dir, device=cfg.device)
+
+    energy_net = EnergyNetWrapper(cfg.pretrained_energy_model_path, device=cfg.device)
+    pointnet2_energy_encoder = PointNet2EncoderWrapper(
+        cfg.pretrained_pointnet2_energy_model_path, device=cfg.device)
+    print(f"Using EnergyNet OM: {cfg.pretrained_energy_model_path}")
+
+    if cfg.pretrained_scale_model_path:
+        scale_net = ScaleNetWrapper(cfg.pretrained_scale_model_path, device=cfg.device)
+        print(f"Using ScaleNet OM: {cfg.pretrained_scale_model_path}")
+
+    if cfg.dino != 'none':
+        dino_om_path = getattr(cfg, 'pretrained_dino_model_path', None)
+        if dino_om_path is not None and dino_om_path.endswith('.om'):
+            dino_model = DINOv2Wrapper(dino_om_path, device=cfg.device)
+            print(f"Using DINOv2 OM: {dino_om_path}")
+        else:
+            import torch.hub
+            dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14').to(cfg.device)
+            dino_model.requires_grad_(False)
+            print("Using DINOv2 PyTorch")
+
+        def extract_dino_features(batch_sample):
+            roi_rgb = batch_sample['roi_rgb']
+            roi_xs = batch_sample['roi_xs']
+            roi_ys = batch_sample['roi_ys']
+            if is_om_model:
+                return dino_model(roi_rgb, roi_xs, roi_ys)
+            feat = dino_model.get_intermediate_layers(roi_rgb)[0]
+            xs = roi_xs // 14
+            ys = roi_ys // 14
+            pos = xs * 16 + ys
+            pos = torch.unsqueeze(pos, -1).expand(-1, -1, 384)
+            rgb_feat = torch.gather(feat, 1, pos)
+            rgb_feat.requires_grad_(False)
+            return rgb_feat
+    else:
+        def extract_dino_features(batch_sample):
+            return None
 
 def work_batch(test_batch, prev_pose):
-    batch_sample = process_batch(
-        batch_sample = test_batch, 
-        device=cfg.device, 
-        pose_mode=cfg.pose_mode,
-    )
-    
-    _prev_pose = prev_pose.clone()
-    _prev_pose[:, -3:] -= batch_sample['pts_center']
-    cfg.agent_type = 'score'
-    score_pred_results, _ = score_agent.pred_func(
-        data=batch_sample, 
-        repeat_num=cfg.eval_repeat_num, 
-        T0=cfg.T0,
-        init_x=_prev_pose,
-        return_average_res=False,
-        return_process=False,
-    )
-    score_feature = {
-        'pts_feat': batch_sample['pts_feat'].clone(),
-        'rgb_feat': (None if batch_sample['rgb_feat'] is None else batch_sample['rgb_feat'].clone()),
-    }
-    
-    cfg.agent_type = 'energy'
-    energy_pred_results = energy_agent.get_energy(
-        data=batch_sample, 
-        pose_samples=score_pred_results, 
-        T=1e-5,
-        mode='test', 
-        extract_feature=True
-    )
+    if is_om_model:
+        batch_sample = process_batch_numpy(test_batch, pose_mode=cfg.pose_mode)
+    else:
+        batch_sample = process_batch(
+            batch_sample = test_batch,
+            device=cfg.device,
+            pose_mode=cfg.pose_mode,
+        )
 
-    sorted_pose, sorted_energy = sort_poses_by_energy(score_pred_results, energy_pred_results)
+    bs = prev_pose.shape[0]
+    pose_dim = get_pose_dim(cfg.pose_mode) if is_om_model else prev_pose.shape[1]
+    repeat_num = cfg.eval_repeat_num
+
+    if is_om_model:
+        # OM score path
+        t0 = time.time()
+        # DINOv2 + PointNet2 feature extraction
+        rgb_feat = extract_dino_features(batch_sample)
+        pts_feat = score_net.extract_pts_feat(batch_sample['pts'], rgb_feat)
+
+        # Construct init_x: repeat prev_pose and add noise 
+        _prev_pose = prev_pose.cpu().numpy().copy()
+        _prev_pose[:, -3:] -= batch_sample['pts_center']
+        noise = prior_fn((bs * repeat_num, pose_dim), T=cfg.T0).numpy()
+        prev_pose_repeated = np.repeat(_prev_pose, repeat_num, axis=0)
+        init_x_repeated = prev_pose_repeated + noise
+
+        pts_feat_repeated = np.repeat(pts_feat[np.newaxis, ...], repeat_num, axis=1).reshape(bs * repeat_num, -1)
+
+        _, sampled_pose = sampler.sample(
+            pts_feat=pts_feat_repeated,
+            rgb_feat=None,
+            batch_size=bs * repeat_num,
+            pose_dim=pose_dim,
+            T=cfg.T0,
+            eps=sampling_eps,
+            rtol=1e-5,
+            atol=1e-5,
+            denoise=True,
+            init_x=init_x_repeated,
+            pts_center=None if batch_sample.get('pts_center') is None else
+                np.repeat(batch_sample['pts_center'][:, np.newaxis, :], repeat_num, axis=1).reshape(bs * repeat_num, -1),
+        )
+        score_pred_results = sampled_pose.reshape(bs, repeat_num, pose_dim)
+
+        score_feature = {
+            'pts_feat': pts_feat,
+            'rgb_feat': rgb_feat,
+        }
+
+        # OM energy
+        pts_with_rgb = np.concatenate([batch_sample['pts'], rgb_feat], axis=-1)  # [bs, 1024, 387]
+        pts_feat_energy = pointnet2_energy_encoder(pts_with_rgb)
+
+        pose_samples = score_pred_results.reshape(bs * repeat_num, -1).astype(np.float32)
+        pose_samples[:, -3:] -= np.repeat(batch_sample['pts_center'], repeat_num, axis=0)
+        t = np.full((bs * repeat_num, 1), 1e-5, dtype=np.float32)
+        pts_feat_repeated_energy = np.repeat(pts_feat_energy[np.newaxis, ...], repeat_num, axis=1).reshape(bs * repeat_num, -1)
+
+        with torch.no_grad():
+            pred_energy = energy_net(pts_feat_repeated_energy, pose_samples, t)
+        energy_pred_results = pred_energy.reshape(bs, repeat_num, -1)
+        perf_stats['score_time'].append(time.time() - t0)
+        perf_stats['score_samples'] += bs
+
+    else:
+        # PTH path (original) 
+        t0 = time.time()
+        _prev_pose = prev_pose.clone()
+        _prev_pose[:, -3:] -= batch_sample['pts_center']
+        cfg.agent_type = 'score'
+        score_pred_results, _ = score_agent.pred_func(
+            data=batch_sample,
+            repeat_num=cfg.eval_repeat_num,
+            T0=cfg.T0,
+            init_x=_prev_pose,
+            return_average_res=False,
+            return_process=False,
+        )
+        score_feature = {
+            'pts_feat': batch_sample['pts_feat'].clone(),
+            'rgb_feat': (None if batch_sample['rgb_feat'] is None else batch_sample['rgb_feat'].clone()),
+        }
+
+        cfg.agent_type = 'energy'
+        energy_pred_results = energy_agent.get_energy(
+            data=batch_sample,
+            pose_samples=score_pred_results,
+            T=1e-5,
+            mode='test',
+            extract_feature=True
+        )
+        perf_stats['score_time'].append(time.time() - t0)
+        perf_stats['score_samples'] += bs
+
+    # Convert numpy to tensor for sort and aggregate operations
+    if is_om_model:
+        score_pred_results = torch.from_numpy(score_pred_results)
+        energy_pred_results = torch.from_numpy(energy_pred_results)
+
+    # aggregate + scale
+    t0 = time.time()
+    sorted_pose, sorted_energy = sort_poses_by_energy(
+        score_pred_results, energy_pred_results)
     bs = score_pred_results.shape[0]
     retain_num = int(cfg.eval_repeat_num * cfg.retain_ratio)
     good_pose = sorted_pose[:, :retain_num, :]
@@ -146,28 +280,36 @@ def work_batch(test_batch, prev_pose):
     gt_length = test_batch['bbox_side_len'].numpy()
 
     if cfg.pretrained_scale_model_path:
-        cfg.agent_type = 'scale'
-        batch_sample.update(score_feature)
-        batch_sample['axes'] = aggregated_pose[:, :3, :3].to(cfg.device)
-        with torch.no_grad():
-            pred_length = scale_agent.net(batch_sample) 
-        pred_length = pred_length.cpu().numpy()
+        if is_om_model:
+            pred_length = scale_net(pts_feat, aggregated_pose[:, :3, :3])
+        else:
+            cfg.agent_type = 'scale'
+            batch_sample.update(score_feature)
+            batch_sample['axes'] = aggregated_pose[:, :3, :3].to(cfg.device)
+            with torch.no_grad():
+                pred_length = scale_agent.net(batch_sample)
+            pred_length = pred_length.cpu().numpy()
     else:
         pred_length = np.ones((pred_pose.shape[0], 3))
 
     detect_match = DetectMatch(
-        gt_affine=gt_pose, gt_size=gt_length, 
-        gt_sym_labels=array_to_SymLabel(test_batch['sym_info']), 
+        gt_affine=gt_pose, gt_size=gt_length,
+        gt_sym_labels=array_to_SymLabel(test_batch['sym_info']),
         gt_class_labels=test_batch['class_label'],
         pred_affine=pred_pose, pred_size=pred_length,
         # image_path=[path + 'color.png' for path in test_batch['path']],
         camera_intrinsics=array_to_CameraIntrinsicsBase(test_batch['intrinsics'])
     )
+    perf_stats['aggregate_time'].append(time.time() - t0)
+    perf_stats['aggregate_samples'] += bs
 
-    prev_pose = torch.zeros_like(prev_pose, device=cfg.device)
+    prev_pose = torch.zeros_like(
+        prev_pose, 
+        device=cfg.device if not is_om_model else 'cpu'
+    )
     prev_pose[:, :-3] = get_pose_representation(aggregated_pose[:, :3, :3], cfg.pose_mode)
     prev_pose[:, -3:] = aggregated_pose[:, :3, 3]
-    
+
     return detect_match, prev_pose
 
 img_list = Dataset.glob_prefix(root = cfg.data_path)
@@ -212,6 +354,13 @@ pbar = tqdm(total=total_objects)
 for i in range(30):
     add_dataloader()
 
+perf_stats = {
+    'score_time': [],
+    'score_samples': 0,
+    'aggregate_time': [],
+    'aggregate_samples': 0,
+}
+
 while 1:
     test_batch = []
     prev_pose = []
@@ -233,15 +382,24 @@ while 1:
                 f.write(dataloader.save_path + '\n')
             dd.add(dataloader)
             continue
-        test_batch.append(batch)
         length = dataloader._dataset.num_valid
+        if batch.get('_corrupted', torch.tensor(False)).any():
+            print(f"[SKIP] Corrupted frame in {dataloader.save_path}")
+            pbar.update(length)
+            continue
+        test_batch.append(batch)
         try:
             prev_pose.append(dataloader.prev_pose)
         except:
-            pose = torch.zeros(length, get_pose_dim(cfg.pose_mode), device=cfg.device) # on gpu
+            pose = torch.zeros(
+                length, get_pose_dim(cfg.pose_mode), 
+                device=cfg.device if not is_om_model else 'cpu'
+            )
             assert batch['affine'].shape[0] == length, set_trace()
             for j in range(length):
-                noise_gt_pose = add_noise_to_RT(batch['affine'][j].to(cfg.device).unsqueeze(0))[0]
+                noise_gt_pose = add_noise_to_RT(batch['affine'][j].to(
+                    cfg.device if not is_om_model else 'cpu'
+                ).unsqueeze(0))[0]
                 pose[j, :-3] = get_pose_representation(
                     noise_gt_pose[:3, :3].unsqueeze(0), 
                     pose_mode=cfg.pose_mode
@@ -252,7 +410,11 @@ while 1:
         if split_pos[-1][0] > cfg.batch_size - 8:
             break
     if test_batch == []:
-        break
+        for dl in dd:
+            dataloaders.remove(dl)
+        if len(dataloaders) == 0:
+            break
+        continue
     
     keys = {key for key, value in test_batch[0].items() if type(value) != list}
     test_batch = {
@@ -276,6 +438,43 @@ while 1:
     gc.collect()
 
 pbar.close()
+
+# Print performance statistics
+print("\n" + "="*60)
+print("Performance Statistics")
+print("="*60)
+
+stages = [
+    ('Score + Energy', 'score_time', 'score_samples'),
+    ('Aggregate + Scale', 'aggregate_time', 'aggregate_samples'),
+]
+
+for stage_name, time_key, samples_key in stages:
+    times = perf_stats[time_key]
+    samples = perf_stats[samples_key]
+    if len(times) > 0:
+        t_total = sum(times)
+        fps = samples / t_total if t_total > 0 else 0
+        print(f"\n{stage_name}:")
+        print(f"  Total batches: {len(times)}")
+        print(f"  Total samples: {samples}")
+        print(f"  Total time: {t_total:.3f}s")
+        print(f"  Avg batch time: {t_total/len(times):.3f}s")
+        print(f"  FPS: {fps:.3f}")
+        print(f"  Avg latency per sample: {1000/fps:.2f}ms" if fps > 0 else "")
+
+total_samples = perf_stats['score_samples']
+total_time = sum(perf_stats['score_time']) + sum(perf_stats['aggregate_time'])
+
+if total_time > 0:
+    overall_fps = total_samples / total_time
+    print(f"\n{'='*60}")
+    print(f"Overall Pipeline:")
+    print(f"  Total samples: {total_samples}")
+    print(f"  Total time: {total_time:.3f}s")
+    print(f"  Overall FPS: {overall_fps:.3f}")
+    print(f"  Avg latency per sample: {1000/overall_fps:.2f}ms")
+    print("="*60)
 
 all_dm = []
 all_crit = []

@@ -1,15 +1,19 @@
 import os
 import sys
+
+# Disable OpenCV GUI for headless environments
+os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 import numpy as np
 from tqdm import tqdm
 import pickle
 import torch
+import torch_npu
+torch_npu.npu.set_compile_mode(jit_compile=False)
 import random
 import gc
 import cv2
-import open3d as o3d
-import pyrealsense2 as rs
-import pyrealsense2 as rs
+# import open3d as o3d  # Not needed for offline inference
+# import pyrealsense2 as rs  # Not needed for offline inference
 import numpy as np
 import glob
 
@@ -25,9 +29,9 @@ from utils.so3_visualize import visualize_so3
 from cutoop.eval_utils import DetectMatch, Metrics
 from configs.config import get_config
 from datasets.datasets_infer import InferDataset
-
-from flask import Flask, request
-flask_app = Flask(__name__)
+from runners.evaluation_single import apply_spec_ops_patches
+# from flask import Flask, request
+# flask_app = Flask(__name__)
 
 
 class GenPose2:
@@ -243,11 +247,13 @@ def visualize_pose(data:InferDataset, all_final_pose, all_final_length, visualiz
     all_final_length = all_final_length[0].cpu().numpy()
 
     for index, (obj_pose, obj_length) in enumerate(zip(all_final_pose, all_final_length)):
-        if visualize_pts:
-            pts = data.get_objects()['pts'].cpu().numpy()[index]
-            pcd = o3d.geometry.PointCloud()
-            pcd.points = o3d.utility.Vector3dVector(pts)
-            o3d.visualization.draw_geometries([pcd])
+        # open3d Not needed for offline inference
+        # if visualize_pts:
+        #     pts = data.get_objects()['pts'].cpu().numpy()[index]
+        #     pcd = o3d.geometry.PointCloud()
+        #     pcd.points = o3d.utility.Vector3dVector(pts)
+        #     o3d.visualization.draw_geometries([pcd])
+        #     print(f"Object {index}: visualize_pts is not supported (open3d disabled)")
         color_img = DetectMatch._draw_image(
             vis_img=color_img,
             pred_affine=obj_pose,
@@ -264,17 +270,19 @@ def visualize_pose(data:InferDataset, all_final_pose, all_final_length, visualiz
             thickness=True,
         )
     
-    if visualize_image:
-        cv2.namedWindow('rgb')
-        cv2.imshow('rgb', color_img)
-        cv2.waitKey() 
-        cv2.destroyAllWindows()
+    # Not needed for offline inference
+    # if visualize_image:
+    #     cv2.namedWindow('rgb')
+    #     cv2.imshow('rgb', color_img)
+    #     cv2.waitKey()
+    #     cv2.destroyAllWindows()
     return color_img
 
 
 def main():
     ######################################## PARAMETERS ########################################
-    DATA_PATH = 'data/Omni6DPose/ROPE/000007'                 # Path to the data
+    DATA_PATH = 'omin6dpose-000a/ROPE/000000/'                 # Path to the data
+    RESULT_DIR = 'result_images'                               # Output directory for result images
     TRACKING = True                                           # Tracking mode
 
     # Tracking parameter, if the relative pose between the current frame and the previous frame
@@ -286,7 +294,12 @@ def main():
     ENERGY_MODEL_PATH='results/ckpts/EnergyNet/energynet.pth'  # Path to the energy model
     SCALE_MODEL_PATH='results/ckpts/ScaleNet/scalenet.pth'     # Path to the scale model
     PREV_POSE = None                                           # Previous pose
+    apply_spec_ops_patches()
     ######################################## PARAMETERS ########################################
+
+    # Create result directory
+    os.makedirs(RESULT_DIR, exist_ok=True)
+    print(f"Results will be saved to: {os.path.abspath(RESULT_DIR)}")
 
     ''' load data '''
     # Get data from image file
@@ -297,20 +310,26 @@ def main():
         scale_model_path=SCALE_MODEL_PATH,
     )
     
-    cv2.namedWindow('rgb')
+    # cv2.namedWindow('rgb')  # Not needed for offline inference
     for index, color_image in enumerate(tqdm(color_images)):
         data_prefix = color_image.replace('color.png', '')
         data = InferDataset.alternetive_init(data_prefix, img_size=GenPose2.cfg.img_size, device=GenPose2.cfg.device, n_pts=GenPose2.cfg.num_points)
         pose, length = GenPose2.inference(data, PREV_POSE, TRACKING, TRACKING_T0)
         color_image_w_pose = visualize_pose(data, pose, length, visualize_image=False)
-        PREV_POSE = pose
-        cv2.imshow('rgb', color_image_w_pose)
-        cv2.waitKey(1) 
 
-    cv2.destroyAllWindows()    
+        # Save result image to result_images directory
+        image_filename = os.path.basename(color_image)  # e.g., "000123_color.png"
+        output_filename = image_filename.replace('color.png', '_result.png')  # "000123_result.png"
+        output_path = os.path.join(RESULT_DIR, output_filename)
+        cv2.imwrite(output_path, color_image_w_pose)
+
+        PREV_POSE = pose
+        # cv2.imshow('rgb', color_image_w_pose)  # Not needed for offline inference
+        # cv2.waitKey(1)
+
+    # cv2.destroyAllWindows()  # Not needed for offline inference    
 
 
 if __name__ == '__main__':
     main()
-
 
