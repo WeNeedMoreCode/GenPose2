@@ -128,22 +128,34 @@ else:
     from networks.gf_algorithms.sde import init_sde, ve_sde_numpy
     from datasets.datasets_omni6dpose import process_batch_numpy
     from utils.misc import get_pose_dim
+    from env_utils import is_rc_device
 
     prior_fn, _, sde_fn, sampling_eps, _ = init_sde('ve')
-    pointnet2_score_om_path = getattr(cfg, 'pretrained_pointnet2_score_model_path', None)
+    pointnet2_score_path = getattr(cfg, 'pretrained_pointnet2_score_model_path', None)
+    pointnet2_energy_path = getattr(cfg, 'pretrained_pointnet2_energy_model_path', None)
+
+    # RC: pointnet2 runs on CPU via graspnet_cpu_patches; patch pointnet2_utils once.
+    # In RC cfg.pretrained_pointnet2_*_model_path points to .pth (scorenet.pth/energynet.pth)
+    # holding the PointNet2 weights; om_wrappers picks pointnet2_pth_path when is_rc_device().
+    if is_rc_device():
+        from ascendc_kernels.kernel_ctypes.graspnet_cpu_patches import patch_graspnet_cpu_ops
+        patch_graspnet_cpu_ops()
+        print("RC: pointnet2 via graspnet_cpu_patches (CPU)")
 
     # OM path: monolithic PointNet2 OM (pointnet2_from_{score,energy}.om, built via ge_ops + ATC)
     score_net = create_score_network(
         checkpoint_path=cfg.pretrained_score_model_path,
         device=cfg.device,
-        pointnet2_om_path=pointnet2_score_om_path,
+        pointnet2_om_path=pointnet2_score_path,
+        pointnet2_pth_path=pointnet2_score_path,
     )
     sde_dir = {'prior_fn': prior_fn, 'sde_fn': ve_sde_numpy}
     sampler = create_ode_sampler(score_network=score_net, sde=sde_dir, device=cfg.device)
 
     energy_net = EnergyNetWrapper(cfg.pretrained_energy_model_path, device=cfg.device)
     pointnet2_energy_encoder = PointNet2EncoderWrapper(
-        cfg.pretrained_pointnet2_energy_model_path, device=cfg.device)
+        pointnet2_energy_path, device=cfg.device,
+        pointnet2_pth_path=pointnet2_energy_path)
     print(f"Using EnergyNet OM: {cfg.pretrained_energy_model_path}")
 
     if cfg.pretrained_scale_model_path:
