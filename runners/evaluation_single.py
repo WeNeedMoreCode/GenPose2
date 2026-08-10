@@ -201,13 +201,16 @@ def inference_score_decoupled(save_path):
     # Initialize SDE components
     prior_fn, _, sde_fn, sampling_eps, _ = init_sde('ve')
 
-    pointnet2_om_path = getattr(cfg, 'pretrained_pointnet2_score_model_path', None)
+    pointnet2_score_path = getattr(cfg, 'pretrained_pointnet2_score_model_path', None)
 
-    # Create Score Network wrapper (automatically uses OM or PyTorch)
+    # Create Score Network wrapper (automatically uses OM or PyTorch).
+    # RC: pointnet2_pth_path points to .pth (scorenet.pth); om_wrappers picks it when
+    # is_rc_device(), otherwise pointnet2_om_path (.om) drives the monolithic OM path.
     score_net = create_score_network(
         checkpoint_path=cfg.pretrained_score_model_path,
         device=cfg.device,
-        pointnet2_om_path=pointnet2_om_path,  # Pass None for PyTorch, path for OM
+        pointnet2_om_path=pointnet2_score_path,
+        pointnet2_pth_path=pointnet2_score_path,
     )
     if is_om_model:
         from networks.gf_algorithms.sde import ve_sde_numpy
@@ -320,8 +323,11 @@ def inference_energy(score_path, save_path):
     if is_om_model:
         from om_wrappers import EnergyNetWrapper, PointNet2EncoderWrapper
         energy_net = EnergyNetWrapper(cfg.pretrained_energy_model_path, device=cfg.device)
-        # Load PointNet2 from energy checkpoint for pts_feat extraction (monolithic OM)
-        pointnet2_encoder = PointNet2EncoderWrapper(cfg.pretrained_pointnet2_energy_model_path, device=cfg.device)
+        # Load PointNet2 for pts_feat extraction: .om (non-RC) or CPU .pth via
+        # pointnet2_pth_path (RC, energynet.pth; om_wrappers dispatches on is_rc_device()).
+        pointnet2_encoder = PointNet2EncoderWrapper(
+            cfg.pretrained_pointnet2_energy_model_path, device=cfg.device,
+            pointnet2_pth_path=cfg.pretrained_pointnet2_energy_model_path)
         print(f"Using PointNet2 (from energy): {cfg.pretrained_pointnet2_energy_model_path}")
     else:
         cfg.agent_type = 'energy'
@@ -717,6 +723,15 @@ if __name__ == '__main__':
     score_save_path = f'results/evaluation_results/{cfg.result_dir}/score_prediction_{score_model_name}.pkl'
 
     is_om_model = cfg.pretrained_score_model_path.endswith('.om')
+
+    # RC: head nets (score/energy/scale/dino) run OM but pointnet2 runs CPU via
+    # graspnet_cpu_patches. Patch pointnet2_utils once at startup; om_wrappers then
+    # loads pointnet2 from .pth (pointnet2_pth_path) when is_rc_device().
+    from env_utils import is_rc_device
+    if is_om_model and is_rc_device():
+        from ascendc_kernels.kernel_ctypes.graspnet_cpu_patches import patch_graspnet_cpu_ops
+        patch_graspnet_cpu_ops()
+        print("RC: pointnet2 via graspnet_cpu_patches (CPU)")
 
     if not is_om_model:
         import torch_npu
